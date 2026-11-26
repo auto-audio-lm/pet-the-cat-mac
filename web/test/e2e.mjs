@@ -39,7 +39,8 @@ const status = (p) => p.$eval('#status', (e) => e.textContent);
 const sound2 = (p) => p.$eval('#sound', (e) => e.getAttribute('aria-checked'));
 const haptics = (p) => p.evaluate(() => window.__h.slice());
 const pressedCoats = (p) => p.$$eval('#swatches button', (bs) => bs.map((b) => b.getAttribute('aria-pressed')));
-const waitStatus = (p, fn, timeout = 5000) => p.waitForFunction(fn, { timeout }, ).then(() => true, () => false);
+// Poll on a timer, not requestAnimationFrame: rAF stops in a page that is not in front.
+const waitStatus = (p, fn, timeout = 5000) => p.waitForFunction(fn, { timeout, polling: 100 }).then(() => true, () => false);
 
 try {
   let p = await open({ bridge: false });
@@ -195,6 +196,16 @@ try {
   p = await open({ keepPrefs: true });
   ok('prefs: ?theme=dark is not saved', (await p.evaluate(() => document.documentElement.dataset.theme)) !== 'dark');
   await p.close();
+
+  // Two pages open: a theme change in one and a coat change in the other both survive.
+  const pa = await open(), pb = await open({ keepPrefs: true });
+  await pa.bringToFront(); await pa.click('#moon');                          // page A: dark
+  await pb.bringToFront(); await pb.click('#swatches button:nth-child(5)');  // page B: coat 5, after A saved dark
+  await waitStatus(pb, () => document.querySelector('#swatches button:nth-child(5)').getAttribute('aria-pressed') === 'true');
+  const merged = await pb.evaluate(() => JSON.parse(localStorage.getItem('petTheCat.prefs')));
+  ok('prefs: two pages do not undo each other', merged.dark === true && merged.coat === 4, JSON.stringify(merged));
+  await pa.evaluate(() => localStorage.removeItem('petTheCat.prefs'));
+  await pa.close(); await pb.close();
 
   // A saved coat whose image fails at startup falls back to the first coat instead of a blank cat.
   p = await browser.newPage(); await p.setViewport({ width: 1200, height: 800 });

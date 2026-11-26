@@ -26,8 +26,15 @@ try { storedPrefs = localStorage.getItem(PREFS_KEY); } catch { /* ignore */ }
 const prefs = parsePrefs(storedPrefs, COATS.length);
 // The theme the user chose. Kept apart from state.dark, which ?theme=dark can force for one visit without saving.
 let chosenDark = prefs.dark;
-function savePrefs() {
-  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ coat: state.coat, sound: state.sound, dark: chosenDark })); } catch { /* ignore */ }
+// Writes only the fields this page changed, merged into what is stored now, so two open pages don't undo each
+// other's choices (e.g. a coat change here putting back a theme another page just changed).
+function savePrefs(changed) {
+  try {
+    const cur = parsePrefs(localStorage.getItem(PREFS_KEY), COATS.length);
+    const mine = { coat: state.coat, sound: state.sound, dark: chosenDark };
+    for (const k of changed) cur[k] = mine[k];
+    localStorage.setItem(PREFS_KEY, JSON.stringify(cur));
+  } catch { /* ignore */ }
 }
 
 /* ---------- assets ---------- */
@@ -90,7 +97,7 @@ async function setCoat(i) {
     if (wantCoat !== i) return; // a newer choice superseded this one
     const changed = state.coat !== i;
     state.coat = i; state.cur = c; sync(); setNotice('coat'); wake();
-    if (changed) savePrefs();
+    if (changed) savePrefs(['coat']);
   } catch {
     if (wantCoat === i) {
       const msg = `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`;
@@ -273,12 +280,12 @@ function sync() { [...sw.children].forEach((b, i) => b.setAttribute('aria-presse
 sync();
 function showSound() { $('sound').setAttribute('aria-checked', state.sound); $('sound').textContent = state.sound ? '🔊' : '🔇'; }
 function toggleSound() {
-  state.sound = !state.sound; arm(); showSound(); savePrefs();
+  state.sound = !state.sound; arm(); showSound(); savePrefs(['sound']);
   playSample(state.sound ? 'synth-on' : 'synth-off', { volume: 0.25 });
 }
 $('sound').onclick = toggleSound;
 function setDark(v, persist = true) {
-  wake(); state.dark = v; if (persist) { chosenDark = v; savePrefs(); } $('moon').setAttribute('aria-checked', v); $('moon').textContent = v ? '☀' : '☾';
+  wake(); state.dark = v; if (persist) { chosenDark = v; savePrefs(['dark']); } $('moon').setAttribute('aria-checked', v); $('moon').textContent = v ? '☀' : '☾';
   document.documentElement.dataset.theme = v ? 'dark' : 'light';
   document.querySelector('meta[name=theme-color]').content = v ? '#101722' : '#fbf5ec';
 }
