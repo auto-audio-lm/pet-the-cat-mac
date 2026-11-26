@@ -144,13 +144,13 @@ struct GrainGenerator {
     mutating func reset() { travelled = 0; lastEvent = nil; speed = 0 }
 }
 
-/// Pulse strength for one grain: the style's base pulse, one step firmer for a fast stroke (> 900 pt/s) and one
-/// more while the trackpad is pressed down. Steps follow measured amplitude: 1 (19) < 5 (23) < 2 (35) < 6 (48).
-func grainStrength(base: Int32, speed: Double, pressure: Double) -> Int32 {
+/// Pulse strength for one grain: the style's base pulse, one step firmer for a fast stroke (> 900 pt/s).
+/// Steps follow measured amplitude: 1 (19) < 5 (23) < 2 (35) < 6 (48).
+/// (Trackpad pressure is not used: a plain drag may report pressure 1.0, and real drag values were not measured.)
+func grainStrength(base: Int32, speed: Double) -> Int32 {
     let ladder: [Int32] = [1, 5, 2, 6]
     var i = ladder.firstIndex(of: base) ?? 0
     if speed > 900 { i += 1 }
-    if pressure > 0.5 { i += 1 }
     return ladder[min(i, ladder.count - 1)]
 }
 
@@ -248,7 +248,7 @@ final class TrackpadActuator {
 final class FurTexture {
     enum Zone: String { case none, body, tail }
     var zone: Zone = .none { didSet { if zone != oldValue { grains.reset() } } }
-    var style: HapticStyle { didSet { grains = GrainGenerator(spacing: style.spacing); UserDefaults.standard.set(style.rawValue, forKey: "hapticStyle") } }
+    var style: HapticStyle { didSet { cancelDemo(); grains = GrainGenerator(spacing: style.spacing); UserDefaults.standard.set(style.rawValue, forKey: "hapticStyle") } }
     private let actuator = TrackpadActuator()
     private var grains: GrainGenerator
     private var pageGate = HapticGate()
@@ -270,10 +270,7 @@ final class FurTexture {
         guard grains.move(distance: d, at: e.timestamp, random: Double.random(in: -1...1)) else { return }
         count += 1
         let base: Int32 = zone == .tail ? style.tailID : (count % 5 == 0 ? style.clumpID : style.grainID)
-        // Pressing while stroking (a drag) makes the fur feel denser. NSEvent.h: `pressure` is valid for mouse
-        // down/up/drag events; `stage` is valid only for NSEventTypePressure events, so it is not read here.
-        let pressure = e.type == .leftMouseDragged ? Double(e.pressure) : 0
-        play(grainStrength(base: base, speed: grains.speed, pressure: pressure), fallback: .generic, now: e.timestamp)
+        play(grainStrength(base: base, speed: grains.speed), fallback: .generic, now: e.timestamp)
     }
 
     /// One pulse requested by the page ("tick" / "bump"), rate limited like before.
@@ -305,11 +302,21 @@ final class FurTexture {
         return out
     }
 
+    /// Starting a preview or comparison cancels the one still running; so does choosing another style.
+    private var demoGeneration = 0
+    private func demoStillWanted(_ generation: Int) -> Bool {
+        generation == demoGeneration && style != .off && canPlay(nil)
+    }
+    func cancelDemo() { demoGeneration += 1 }
+
     /// Plays the current texture as if stroking at a moderate speed for 1.2 s (finger on the trackpad).
     func preview() {
+        cancelDemo()
         guard style != .off else { return }
+        let generation = demoGeneration
         for p in FurTexture.previewSchedule(style: style, speed: 300, duration: 1.2) {
             DispatchQueue.main.asyncAfter(deadline: .now() + p.t) { [self] in
+                guard demoStillWanted(generation) else { return }
                 play(p.id, fallback: .generic, now: ProcessInfo.processInfo.systemUptime)
             }
         }
@@ -317,8 +324,11 @@ final class FurTexture {
 
     /// Plays actuation IDs 1...6 one after another, 0.6 s apart, to compare strengths.
     func compareStrengths() {
+        cancelDemo()
+        let generation = demoGeneration
         for (i, id) in (1...6).enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 * Double(i)) { [self] in
+                guard demoStillWanted(generation) else { return }
                 if actuator.usable { actuator.pulse(Int32(id)) }
                 else { NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now) }
             }
@@ -326,6 +336,7 @@ final class FurTexture {
     }
 
     private func play(_ id: Int32, fallback: NSHapticFeedbackManager.FeedbackPattern, now: Double) {
+        guard style != .off else { return }
         if style != .system, actuator.usable { actuator.pulse(id); return }
         if style != .system { actuator.retryIfDue() }
         // Public API: fixed strength, so keep pulses at least 45 ms apart.
@@ -382,11 +393,10 @@ if CommandLine.arguments.contains("--selftest") {
         check(pv.contains { $0.id == HapticStyle.normal.clumpID } && pv.contains { $0.id == HapticStyle.normal.grainID },
               "preview mixes grains and clumps")
         check(FurTexture.previewSchedule(style: .soft, speed: 300, duration: 1.2).count < pv.count, "soft is sparser than normal")
-        check(grainStrength(base: 1, speed: 300, pressure: 0) == 1, "slow light stroke keeps the base pulse")
-        check(grainStrength(base: 1, speed: 1200, pressure: 0) == 5, "fast stroke is one step firmer")
-        check(grainStrength(base: 1, speed: 1200, pressure: 0.8) == 2, "fast pressed stroke is two steps firmer")
-        check(grainStrength(base: 6, speed: 1200, pressure: 1) == 6, "strength is capped at the firmest pulse")
-        check(grainStrength(base: 3, speed: 0, pressure: 0) == 1, "unknown base starts from the weakest")
+        check(grainStrength(base: 1, speed: 300) == 1, "slow stroke keeps the base pulse")
+        check(grainStrength(base: 1, speed: 1200) == 5, "fast stroke is one step firmer")
+        check(grainStrength(base: 6, speed: 1200) == 6, "strength is capped at the firmest pulse")
+        check(grainStrength(base: 3, speed: 0) == 1, "unknown base starts from the weakest")
         var first = GrainGenerator(spacing: 8)
         check(first.move(distance: 10, at: 1, random: 0), "a fast first move after a reset is not swallowed")
         check(TrackpadActuator().available || true, "actuator lookup does not crash")

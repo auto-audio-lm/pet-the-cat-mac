@@ -5,18 +5,18 @@
 ### Mac app
 - **Haptics**
   - Fur-texture haptics: while the pointer is over the cat, the app turns native pointer movement into weak trackpad pulses. There is one pulse per ~8 pt, the spacing is jittered, and there are no pulses while the hand is resting. Pulses come from the trackpad actuator in the private `MultitouchSupport` framework; without it the app falls back to the public API.
-  - A fast stroke, or pressing down while stroking, makes the texture one step firmer.
+  - A fast stroke makes the texture one step firmer.
   - The **Haptics** menu offers Off, Soft fur, Fur, Firm fur and System clicks (classic). It also has Preview Texture and Compare Strengths 1–6.
 - **App**
   - App icon.
   - About, Hide, Show All and Enter Full Screen menu items. The window remembers its size and position.
   - Reloads after a web-process crash, at most 3 times in 30 s, then shows an error page.
   - An error page instead of a blank window when the page redirects off its own host.
-- **Testing**: `--smoke-test` launches the app, loads the page, checks the haptic bridge and quits. `./build.sh` runs `--selftest` on both architectures.
+- **Testing**: `--smoke-test` launches the app, loads the page, checks the haptic bridge and quits. `./build.sh` runs `--selftest`, and on the x86_64 slice too when the Mac can run it (Rosetta or Intel).
 - **Signing and CI**
   - CI can sign with a Developer ID certificate and notarize, once the signing secrets are set. Until then releases stay ad-hoc signed, and Gatekeeper blocks a downloaded copy.
   - Releases include a SHA-256 checksum.
-  - A release tag must match the app version.
+  - A release tag must match the app version; this is checked before the build.
 
 ### Web page (needs a Cloudflare Pages deploy, see `docs/deploy-web.md`)
 - **Sound**
