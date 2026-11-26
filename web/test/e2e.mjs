@@ -15,12 +15,18 @@ const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new'
 let failed = 0;
 const ok = (name, cond, info = '') => { if (!cond) failed++; console.log(`${cond ? 'PASS' : 'FAIL'}: ${name}${info ? '  [' + info + ']' : ''}`); };
 
-async function open({ q = '', bridge = true, block = () => false } = {}) {
+async function open({ q = '', bridge = true, native = false, block = () => false } = {}) {
   const p = await browser.newPage(); await p.setViewport({ width: 1200, height: 800 });
-  await p.evaluateOnNewDocument((withBridge) => {
-    window.__h = [];
-    if (withBridge) window.webkit = { messageHandlers: { haptic: { postMessage: (m) => window.__h.push([performance.now(), m.kind]) } } };
-  }, bridge);
+  await p.evaluateOnNewDocument((withBridge, withNative) => {
+    window.__h = []; window.__zones = []; window.__osc = 0; window.__started = 0;
+    if (window.AudioBufferSourceNode) { const st = AudioBufferSourceNode.prototype.start; AudioBufferSourceNode.prototype.start = function (...a) { if (this.loop) window.__started++; return st.apply(this, a); }; }
+    // Count oscillators: the page must not synthesize a hum (the removed purr drone).
+    for (const AC of [window.AudioContext, window.webkitAudioContext]) {
+      if (AC) { const orig = AC.prototype.createOscillator; AC.prototype.createOscillator = function (...a) { window.__osc++; return orig.apply(this, a); }; }
+    }
+    if (withBridge) window.webkit = { messageHandlers: { haptic: { postMessage: (m) => (m.kind === 'zone' ? window.__zones.push(m.zone) : window.__h.push([performance.now(), m.kind])) } } };
+    if (withNative) window.petTheCatNative = Object.freeze({ texture: 1 });
+  }, bridge, native);
   await p.setRequestInterception(true);
   // block(url) returns false to pass the request through, true for a 404, or a response object.
   p.on('request', (r) => { const b = block(r.url()); return b ? r.respond(b === true ? { status: 404, body: 'x' } : b) : r.continue(); });
@@ -88,9 +94,10 @@ try {
   for (let i = 0; i < 4; i++) { await p.mouse.move(780, 420, { steps: 30 }); await p.mouse.move(420, 380, { steps: 30 }); }
   await p.mouse.up();
   const strokeHaptics = (await haptics(p)).length;
+  ok('brushing noise source (looping) is playing', (await p.evaluate(() => window.__started)) === 1, `started ${await p.evaluate(() => window.__started)}`);
+  ok('no synthesized hum while petting (no oscillators)', (await p.evaluate(() => window.__osc)) === 0, `oscillators ${await p.evaluate(() => window.__osc)}`);
   ok('long stroke plays at most the touch pat, no click train', (await samples()) - s0 <= 1 && strokeHaptics > 5,
     `samples +${(await samples()) - s0}, haptics ${strokeHaptics}`);
-  ok('petting builds up the purr', (await p.evaluate(() => window.__petState().purr)) > 0.25);
   await p.mouse.click(10, 10);
   const t0 = await samples(); await p.keyboard.down('t'); await sleep(2000); await p.keyboard.up('t');
   ok('tail strokes thump at most every 400 ms', (await samples()) - t0 <= 6, `+${(await samples()) - t0} in 2 s`);
@@ -126,6 +133,18 @@ try {
 
   p = await open({ block: (u) => u.includes('/sounds/low-thumps.mp3') });
   ok('missing sound file shows notice', (await status(p)).includes('소리 파일'), await status(p));
+  await p.close();
+
+  // Mac app with the native fur texture: pointer strokes report zones only, keyboard petting still sends pulses.
+  p = await open({ native: true });
+  await p.mouse.move(100, 100); await p.mouse.move(600, 400, { steps: 10 }); await p.mouse.move(720, 420, { steps: 20 });
+  const zones = await p.evaluate(() => window.__zones.slice());
+  ok('native texture: zone reported, no per-step pointer pulses', zones.includes('body') && (await haptics(p)).length === 0,
+    `zones ${zones.join(',')}, pulses ${(await haptics(p)).length}`);
+  await p.mouse.move(5, 5, { steps: 5 });
+  ok('native texture: leaving the cat reports none', (await p.evaluate(() => window.__zones.at(-1))) === 'none');
+  await p.keyboard.down('Space'); await sleep(600); await p.keyboard.up('Space');
+  ok('native texture: keyboard petting still sends pulses', (await haptics(p)).length > 0);
   await p.close();
 
   // Static hosts answer a missing file with 200 + index.html; that must count as missing too.

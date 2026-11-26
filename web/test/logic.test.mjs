@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { keyAction, keyUpAction, makeHapticGate, hit, zoneAt, fadeAlpha, isAudioResponse, brushLevel, purrLevel, W } from '../src/logic.js';
+import { keyAction, keyUpAction, makeHapticGate, hit, zoneAt, fadeAlpha, isAudioResponse, brushLevel, W } from '../src/logic.js';
 
 const btn = { tagName: 'BUTTON' }, body = { tagName: 'BODY' };
 test('plain keys', () => {
@@ -48,12 +48,6 @@ test('stroke sound: brushing follows speed, silent off the cat and when still', 
   assert.ok(brushLevel(300, 'body') < brushLevel(900, 'body'));
   assert.ok(brushLevel(900, 'tail') < brushLevel(900, 'body'));
   assert.ok(brushLevel(5000, 'body') <= 0.045);
-});
-test('purr: silent at first, grows, capped', () => {
-  assert.equal(purrLevel(0), 0);
-  assert.equal(purrLevel(0.25), 0);
-  assert.ok(purrLevel(0.6) > 0 && purrLevel(0.6) < purrLevel(1));
-  assert.ok(purrLevel(1) <= 0.32);
 });
 test('keyup mapping', () => { assert.equal(keyUpAction({ key: ' ' }), 'body'); assert.equal(keyUpAction({ key: 'T' }), 'tail'); assert.equal(keyUpAction({ key: 'x' }), null); });
 test('haptic gate: tick 50ms, bump 25ms, bump not starved', () => {
