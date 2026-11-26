@@ -107,7 +107,7 @@ const bridge = () => window.webkit?.messageHandlers?.haptic;
 // A Mac app that makes the fur texture natively announces it; the page then only reports which part of the cat the
 // pointer is over, and pointer strokes send no per-step pulses (keyboard petting and buttons still do).
 const nativeTexture = () => !!window.petTheCatNative?.texture && !!bridge();
-let sentZone = 'none';
+let sentZone = null; // unknown until the first report, so a fresh page's first 'none' is sent too
 function reportZone(zone) {
   if (!nativeTexture() || zone === sentZone) return;
   sentZone = zone;

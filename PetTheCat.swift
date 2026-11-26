@@ -131,6 +131,7 @@ struct GrainGenerator {
     /// `random` in -1...1 jitters the spacing of the following grain.
     mutating func move(distance: Double, at t: Double, random: Double) -> Bool {
         if let last = lastEvent { speed = speed * 0.6 + (distance / max(t - last, 0.001)) * 0.4 }
+        else { speed = distance / 0.008 }   // first event after a reset: assume a typical ~8 ms event interval
         lastEvent = t
         travelled += distance
         guard travelled >= next else { return false }
@@ -144,6 +145,8 @@ struct GrainGenerator {
 }
 
 /// The trackpad's actuator through MultitouchSupport. All calls run on one serial queue; at most two pulses wait.
+/// `usable` turns false when no device could be opened or none accepted a pulse; the caller then uses the public
+/// API, and devices are looked up again at most every 2 s.
 final class TrackpadActuator {
     private typealias CreateListFn = @convention(c) () -> Unmanaged<CFArray>?
     private typealias GetDeviceIDFn = @convention(c) (UnsafeRawPointer, UnsafeMutablePointer<UInt64>) -> Int32
@@ -158,6 +161,8 @@ final class TrackpadActuator {
     private let queue = DispatchQueue(label: "petthecat.actuator", qos: .userInteractive)
     private let lock = NSLock()
     private var waiting = 0
+    private var usableFlag = true
+    private var lastOpenAttempt = -1000.0
     /// Whether the private framework and its functions were found. Pulses may still fail later (no trackpad).
     let available: Bool
 
@@ -189,7 +194,21 @@ final class TrackpadActuator {
         return result
     }
 
-    /// Plays one pulse. Returns false when it was dropped because pulses are already waiting.
+    var usable: Bool { lock.lock(); defer { lock.unlock() }; return available && usableFlag }
+    private func setUsable(_ v: Bool) { lock.lock(); usableFlag = v; lock.unlock() }
+
+    /// On the queue: open the devices if needed, at most every 2 s.
+    private func ensureOpen() {
+        guard !opened else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastOpenAttempt >= 2 else { return }
+        lastOpenAttempt = now
+        actuators = openAll()
+        opened = !actuators.isEmpty
+        setUsable(opened)
+    }
+
+    /// Plays one pulse on every open trackpad. Returns false when dropped because pulses are already waiting.
     @discardableResult
     func pulse(_ id: Int32) -> Bool {
         lock.lock()
@@ -198,18 +217,21 @@ final class TrackpadActuator {
         lock.unlock()
         queue.async { [self] in
             defer { lock.lock(); waiting -= 1; lock.unlock() }
-            if !opened { actuators = openAll(); opened = true }
-            guard let actuateFn else { return }
-            var failed = actuators.isEmpty
-            for a in actuators where actuateFn(a, id, 0, 0, 0) != 0 { failed = true }
-            if failed { // e.g. stale after sleep/wake: close and reopen on the next pulse
-                for a in actuators { _ = close?(a) }
-                actuators = []
-                opened = false
+            ensureOpen()
+            guard let actuateFn, opened else { return }
+            // Keep the devices that took the pulse; close the ones that failed (e.g. stale after sleep/wake).
+            var kept: [CFTypeRef] = []
+            for a in actuators {
+                if actuateFn(a, id, 0, 0, 0) == 0 { kept.append(a) } else { _ = close?(a) }
             }
+            actuators = kept
+            if kept.isEmpty { opened = false; setUsable(false) }
         }
         return true
     }
+
+    /// While unusable: try to open the devices again (throttled), without playing anything.
+    func retryIfDue() { guard available else { return }; queue.async { [self] in ensureOpen() } }
 }
 
 /// Fur texture made from native pointer movement while the page says the pointer is over the cat.
@@ -251,7 +273,8 @@ final class FurTexture {
     }
 
     private func play(_ id: Int32, fallback: NSHapticFeedbackManager.FeedbackPattern, now: Double) {
-        if style != .system, actuator.available { actuator.pulse(id); return }
+        if style != .system, actuator.usable { actuator.pulse(id); return }
+        if style != .system { actuator.retryIfDue() }
         // Public API: fixed strength, so keep pulses at least 45 ms apart.
         guard now - fallbackLast >= 0.045 else { return }
         fallbackLast = now
@@ -299,6 +322,8 @@ if CommandLine.arguments.contains("--selftest") {
         for i in 1...400 { dist += 0.5; if jit.move(distance: 0.5, at: Double(i) * 0.005, random: sin(Double(i) * 0.37)) { at.append(dist) } }
         let spacings = Set(zip(at.dropFirst(), at).map { $0 - $1 })
         check(spacings.count > 1, "jitter varies the spacing")
+        var first = GrainGenerator(spacing: 8)
+        check(first.move(distance: 10, at: 1, random: 0), "a fast first move after a reset is not swallowed")
         check(TrackpadActuator().available || true, "actuator lookup does not crash")
         for s in HapticStyle.allCases { check(s.spacing > 0 && s.grainID > 0, "style \(s.rawValue) has parameters") }
     }
@@ -384,6 +409,7 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
         let e = error as NSError
         guard let message = loadErrorMessage(domain: e.domain, code: e.code) else { return }
         if smokeTest { smokeExit(false, message) }
+        texture.zone = .none
         webView.loadHTMLString(errorPage(message), baseURL: nil)
     }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -394,6 +420,9 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
     }
     // The page's web process crashed. `reload()` does nothing if nothing had committed yet, so load the start URL;
     // after repeated crashes show the error page instead of looping.
+    // A new page (or the error page) starts with the pointer over nothing until it reports otherwise.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { texture.zone = .none }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard smokeTest else { return }
         guard webView.url?.host == allowedHost else { smokeExit(false, "loaded \(webView.url?.absoluteString ?? "nothing") instead of the app page"); return }
@@ -422,6 +451,7 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        texture.zone = .none
         if crashes.allowRestart(now: ProcessInfo.processInfo.systemUptime) {
             webView.load(URLRequest(url: startURL))
         } else {
@@ -429,7 +459,7 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
         }
     }
 
-    @objc func reload() { web.load(URLRequest(url: startURL)) }
+    @objc func reload() { texture.zone = .none; web.load(URLRequest(url: startURL)) }
 
     // target="_blank" links: open in the default browser, never in a new in-app window.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
