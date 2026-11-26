@@ -284,6 +284,7 @@ function updateStatus() {
 }
 updateStatus();
 showSound();
+if (!state.sound) $('hint').textContent = '소리는 꺼져 있어요. 🔇 버튼이나 M 키로 켤 수 있어요';
 // ?theme=dark forces the dark theme for this visit without saving it; otherwise the saved theme applies.
 if (new URLSearchParams(location.search).get('theme') === 'dark') setDark(true, false); // no sound, no gesture needed
 else if (prefs.dark) setDark(true, false);

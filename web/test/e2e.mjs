@@ -186,6 +186,7 @@ try {
   await waitStatus(p, () => document.querySelector('#swatches button:nth-child(4)').getAttribute('aria-pressed') === 'true');
   const kept = await p.evaluate(() => ({ coat: [...document.querySelectorAll('#swatches button')].findIndex((b) => b.getAttribute('aria-pressed') === 'true'),
     sound: document.getElementById('sound').getAttribute('aria-checked'), theme: document.documentElement.dataset.theme }));
+  ok('prefs: with sound saved off, the hint says how to turn it on', (await p.$eval('#hint', (e) => e.textContent)).includes('M 키'));
   ok('prefs: coat, sound and theme are remembered', kept.coat === 3 && kept.sound === 'false' && kept.theme === 'dark', JSON.stringify(kept));
   await p.click('#moon'); await p.close();                       // back to light, saved
   p = await open({ keepPrefs: true, q: '?theme=dark' }); await p.close();
