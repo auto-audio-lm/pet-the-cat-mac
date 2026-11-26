@@ -83,6 +83,15 @@ jobs:
       - name: Build universal app
         run: ./build.sh
 
+      # Opens the app, loads the live page and checks the haptic bridge; plays no haptics. It depends on the live
+      # site and the runner's window server, so a failure is reported but does not block the build.
+      - name: Smoke test (launch and load the page)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          "build/Pet the Cat.app/Contents/MacOS/PetTheCat" --smoke-test || { echo "::warning::App smoke test failed (see log)."; exit 1; }
+
       - name: Notarize and staple
         if: steps.signing.outputs.enabled == 'true'
         env:
