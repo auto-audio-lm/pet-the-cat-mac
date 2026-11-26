@@ -1,0 +1,22 @@
+:root{--bg:#fbf5ec;--fg:#453327;--chip:#f0e6d8}
+html[data-theme=dark]{--bg:#101722;--fg:#d8dde8;--chip:#1c2636}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Noto Sans KR",sans-serif;-webkit-user-select:none;user-select:none}
+main{max-width:1100px;margin:0 auto;padding:8px 8px 20px}
+.stage{position:relative;border-radius:18px;overflow:hidden;line-height:0;touch-action:none;cursor:none;box-shadow:0 6px 24px #0002}
+canvas{width:100%;height:auto;display:block}
+.hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);background:#000a;color:#fff;font-size:13px;line-height:1.2;padding:8px 14px;border-radius:99px;pointer-events:none;transition:opacity .4s}
+.hint.gone{opacity:0}
+.round{position:absolute;top:10px;right:10px;width:44px;height:44px;border-radius:50%;border:0;background:#fffc;font-size:20px;cursor:pointer}
+.bar{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap;justify-content:center}
+.swatches{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+.sw{width:44px;height:44px;border-radius:50%;border:2px solid #0003;padding:0;cursor:pointer;position:relative;background-size:cover;background-position:center}
+.sw[aria-pressed=true]{outline:3px solid var(--fg);outline-offset:3px}
+.tool{width:44px;height:44px;border-radius:50%;border:0;background:var(--chip);color:var(--fg);cursor:pointer;font-size:18px;display:grid;place-items:center}
+.tool svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
+.tool[aria-checked=false]{opacity:.5}
+.help,.status,footer{text-align:center;font-size:13px;opacity:.75;margin:10px 0 0}
+.status{font-size:12px;opacity:.6}
+footer{font-size:12px;opacity:.5}
+footer a{color:inherit}
+html:fullscreen .stage{border-radius:0}
