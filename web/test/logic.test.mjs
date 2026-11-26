@@ -1,0 +1,47 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { keyAction, keyUpAction, makeHapticGate, hit, zoneAt, fadeAlpha, W } from '../src/logic.js';
+
+const btn = { tagName: 'BUTTON' }, body = { tagName: 'BODY' };
+test('plain keys', () => {
+  assert.equal(keyAction({ key: ' ', target: body }), 'body');
+  assert.equal(keyAction({ key: 'T', target: body }), 'tail');
+  assert.equal(keyAction({ key: 'm', target: body }), 'mute');
+});
+test('modifier combos are ignored', () => {
+  for (const mod of ['metaKey', 'ctrlKey', 'altKey']) for (const key of [' ', 't', 'm']) assert.equal(keyAction({ key, [mod]: true, target: body }), null);
+});
+test('mute ignores key repeat, hold keys do not need it', () => {
+  assert.equal(keyAction({ key: 'm', repeat: true, target: body }), null);
+  assert.equal(keyAction({ key: ' ', repeat: true, target: body }), 'body');
+});
+test('focused controls keep Space', () => {
+  assert.equal(keyAction({ key: ' ', target: btn }), null);
+  assert.equal(keyAction({ key: ' ', target: { tagName: 'DIV', getAttribute: () => 'switch' } }), null);
+  assert.equal(keyAction({ key: ' ', target: { tagName: 'INPUT' } }), null);
+});
+test('keyup mapping', () => { assert.equal(keyUpAction({ key: ' ' }), 'body'); assert.equal(keyUpAction({ key: 'T' }), 'tail'); assert.equal(keyUpAction({ key: 'x' }), null); });
+test('haptic gate: tick 50ms, bump 25ms, bump not starved', () => {
+  const g = makeHapticGate(50, 25);
+  assert.equal(g('tick', 1000), true);
+  assert.equal(g('tick', 1030), false);
+  assert.equal(g('bump', 1030), true);   // 30ms after tick: allowed
+  assert.equal(g('bump', 1060), false);  // bumps at most every 120ms
+  assert.equal(g('tick', 1070), false);  // within 50ms of the bump
+  assert.equal(g('tick', 1085), true);
+  assert.equal(g('bump', 1100), false);  // 15ms after tick
+  assert.equal(g('bump', 1200), true);
+});
+test('mask hit and zones', () => {
+  const m = new Uint8ClampedArray(1200 * 800 * 4);
+  const set = (x, y) => { m[(y * 1200 + x) * 4] = 255; };
+  set(100, 100); set(900, 100);
+  assert.equal(hit(m, 100, 100), true); assert.equal(hit(m, 101, 100), false); assert.equal(hit(null, 100, 100), false);
+  assert.equal(hit(m, -1, 5), false); assert.equal(hit(m, W, 5), false);
+  assert.equal(zoneAt(m, 100, 100), 'body'); assert.equal(zoneAt(m, 900, 100), 'tail'); assert.equal(zoneAt(m, 5, 5), 'none');
+});
+test('fade is frame-rate independent', () => {
+  assert.ok(Math.abs(fadeAlpha(1000 / 60) - 0.045) < 1e-9);
+  const two = 1 - (1 - fadeAlpha(1000 / 120)) ** 2; assert.ok(Math.abs(two - fadeAlpha(1000 / 60)) < 1e-9);
+  assert.equal(fadeAlpha(0), 0);
+});
