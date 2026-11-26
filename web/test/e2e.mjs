@@ -159,6 +159,21 @@ try {
   ok('theme change redraws', (await drawsNow()) > d3);
   await p.close();
 
+  // Accessibility: named canvas, announced status, visible focus on a selected swatch, documented shortcuts.
+  p = await open();
+  const a11y = await p.evaluate(() => ({
+    canvas: document.getElementById('c').getAttribute('aria-label') || '',
+    live: document.getElementById('status').getAttribute('aria-live'),
+    help: document.querySelector('.help').textContent,
+  }));
+  ok('a11y: canvas has a name, status is a live region, help lists M', a11y.canvas.length > 10 && a11y.live === 'polite' && a11y.help.includes('M('), JSON.stringify(a11y));
+  await p.keyboard.press('Tab'); // first focusable: the theme switch
+  let guard = 0;
+  while (guard++ < 20 && !(await p.evaluate(() => document.activeElement?.getAttribute('aria-pressed') === 'true'))) await p.keyboard.press('Tab');
+  const ring = await p.evaluate(() => getComputedStyle(document.activeElement).boxShadow);
+  ok('a11y: keyboard focus on the selected swatch shows a ring', ring && ring !== 'none', ring);
+  await p.close();
+
   // Static hosts answer a missing file with 200 + index.html; that must count as missing too.
   p = await open({ block: (u) => u.includes('/sounds/low-thumps.mp3') && { status: 200, contentType: 'text/html', body: '<!doctype html><html></html>' } });
   ok('sound replaced by an HTML fallback shows notice', (await status(p)).includes('소리 파일'), await status(p));

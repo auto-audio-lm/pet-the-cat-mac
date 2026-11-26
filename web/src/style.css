@@ -12,11 +12,13 @@ canvas{width:100%;height:auto;display:block}
 .swatches{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
 .sw{width:44px;height:44px;border-radius:50%;border:2px solid #0003;padding:0;cursor:pointer;position:relative;background-size:cover;background-position:center}
 .sw[aria-pressed=true]{outline:3px solid var(--fg);outline-offset:3px}
+/* Keyboard focus ring, separate from the pressed outline so a focused, selected swatch still shows focus. */
+.sw:focus-visible,.tool:focus-visible,.round:focus-visible{outline-color:var(--fg);box-shadow:0 0 0 3px var(--bg),0 0 0 6px #2f7de1}
 .tool{width:44px;height:44px;border-radius:50%;border:0;background:var(--chip);color:var(--fg);cursor:pointer;font-size:18px;display:grid;place-items:center}
 .tool svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round}
 .tool[aria-checked=false]{opacity:.5}
 .help,.status,footer{text-align:center;font-size:13px;opacity:.75;margin:10px 0 0}
-.status{font-size:12px;opacity:.6}
-footer{font-size:12px;opacity:.5}
+.status{font-size:12px;opacity:.82}
+footer{font-size:12px;opacity:.82}
 footer a{color:inherit}
 html:fullscreen .stage{border-radius:0}
