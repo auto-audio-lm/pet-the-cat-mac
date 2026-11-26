@@ -1,5 +1,6 @@
 import { press, setPath, load } from 'button-sounds';
-import { W, H, hit as hitMask, zoneAt as zoneAtMask, keyAction, keyUpAction, makeHapticGate, fadeAlpha, isAudioResponse } from './logic.js';
+import { W, H, hit as hitMask, zoneAt as zoneAtMask, keyAction, keyUpAction, makeHapticGate, fadeAlpha, isAudioResponse,
+  brushLevel, THUMP_GAP, PREFS_KEY, parsePrefs } from './logic.js';
 
 setPath('/sounds/');
 const SOUNDS = ['uhk-soft', 'low-thumps', 'synth-on', 'synth-off', 'tonal-on', 'hi75-soft'];
@@ -17,6 +18,24 @@ const COATS = [
   { id: 'white', name: '흰 고양이' }, { id: 'mackerel', name: '고등어' }, { id: 'tuxedo', name: '턱시도' },
   { id: 'brown', name: '카오스' }, { id: 'grey', name: '회색' }, { id: 'siamese', name: '샴' }, { id: 'cream', name: '크림 장모' },
 ];
+
+/* ---------- saved preferences (coat, sound, theme) ---------- */
+// Storage can be unavailable (private mode, blocked); the page then simply starts with the defaults.
+let storedPrefs = null;
+try { storedPrefs = localStorage.getItem(PREFS_KEY); } catch { /* ignore */ }
+const prefs = parsePrefs(storedPrefs, COATS.length);
+// The theme the user chose. Kept apart from state.dark, which ?theme=dark can force for one visit without saving.
+let chosenDark = prefs.dark;
+// Writes only the fields this page changed, merged into what is stored now, so two open pages don't undo each
+// other's choices (e.g. a coat change here putting back a theme another page just changed).
+function savePrefs(changed) {
+  try {
+    const cur = parsePrefs(localStorage.getItem(PREFS_KEY), COATS.length);
+    const mine = { coat: state.coat, sound: state.sound, dark: chosenDark };
+    for (const k of changed) cur[k] = mine[k];
+    localStorage.setItem(PREFS_KEY, JSON.stringify(cur));
+  } catch { /* ignore */ }
+}
 
 /* ---------- assets ---------- */
 const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('load failed: ' + src)); i.src = src; });
@@ -47,56 +66,91 @@ function fadeSleeve(img) {
   g.globalCompositeOperation = 'destination-in'; g.fillStyle = grad; g.fillRect(0, 0, c.width, c.height);
   return c;
 }
-const loadHand = () => loadImg('/cats/hand.webp').then((i) => (handImg = fadeSleeve(i))).catch(() => setTimeout(loadHand, 5000));
+const loadHand = () => loadImg('/cats/hand.webp').then((i) => { handImg = fadeSleeve(i); wake(); }).catch(() => setTimeout(loadHand, 5000));
 loadHand();
 const hit = (x, y) => hitMask(mask, x, y);
 
+/* ---------- idle rendering ---------- */
+// The canvas is redrawn only while something changes: input, a coat or theme change, or ruffled fur still fading
+// (gone after ~2 s). An idle window, even with the pointer resting on it, then costs no drawing.
+const IDLE_AFTER = 3000;
+let lastActive = performance.now(), draws = 0;
+// Fur strokes fade per drawn frame (dt capped at 64 ms), so at a low frame rate the fade takes longer than
+// IDLE_AFTER of wall time: keep drawing until this much (capped) fade time has run since the last stroke.
+let fadeLeft = 0;
+const FADE_MS = 3000;
+const wake = () => { lastActive = performance.now(); };
+
 /* ---------- state ---------- */
 const state = {
-  coat: 0, cur: null, dark: false, sound: true, armed: false,
+  coat: prefs.coat, cur: null, dark: false, sound: prefs.sound, armed: false,  // coat: shown as selected while it loads
   px: -999, py: -999, inside: false, lastX: 0, lastY: 0, lastT: 0, speed: 0,
-  purr: 0, accum: 0, zone: 'none', pressure: 0, kbd: null, down: false,
+  accum: 0, zone: 'none', pressure: 0, kbd: null, down: false,
 };
 const ruffle = document.createElement('canvas'); ruffle.width = W; ruffle.height = H;
 const rg = ruffle.getContext('2d');
 let wantCoat = 0;
-async function setCoat(i) {
+// `save`: the user picked this coat (always remembered); startup and the fallback below never save.
+async function setCoat(i, save = false) {
   wantCoat = i;
   try {
     const c = await getCoat(COATS[i].id);
     if (wantCoat !== i) return; // a newer choice superseded this one
-    state.coat = i; state.cur = c; sync(); setNotice('coat');
+    state.coat = i; state.cur = c; sync(); setNotice('coat'); wake();
+    if (save) savePrefs(['coat']);
   } catch {
-    if (wantCoat === i) { wantCoat = state.coat; setNotice('coat', `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`); }
+    if (wantCoat === i) {
+      const msg = `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`;
+      setNotice('coat', msg);
+      // Nothing shown yet (e.g. the saved coat failed at startup): fall back to the first coat instead of a blank
+      // cat, and keep the notice so it is clear why another cat appeared.
+      if (!state.cur && i !== 0) setCoat(0).then(() => { if (wantCoat === 0) setNotice('coat', msg); });
+      else wantCoat = state.coat;
+    }
   }
 }
-setCoat(0);
+setCoat(prefs.coat);
 
 /* ---------- audio ---------- */
-let actx = null, noiseGain, noiseFilter, purrGain, purrLfo;
+let actx = null, noiseGain, noiseFilter;
+// No purr: a synthesized low hum sounded like a drone, not a cat (removed at the user's request).
+// Looping noise buffer. Pink-ish (white noise through a one-pole lowpass) so the brushing sounds soft, not hissy.
+function noiseSource(seconds, smooth) {
+  const buf = actx.createBuffer(1, actx.sampleRate * seconds, actx.sampleRate), d = buf.getChannelData(0);
+  let y = 0;
+  for (let i = 0; i < d.length; i++) { y += (Math.random() * 2 - 1 - y) * smooth; d[i] = y; }
+  let peak = 0; for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]));
+  for (let i = 0; i < d.length; i++) d[i] /= peak || 1;
+  const src = actx.createBufferSource(); src.buffer = buf; src.loop = true; return src;
+}
 function ensureAudio() {
   if (actx) { if (actx.state === 'suspended') actx.resume(); return; }
   const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
   actx = new AC();
-  const buf = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate), d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  const src = actx.createBufferSource(); src.buffer = buf; src.loop = true;
-  noiseFilter = actx.createBiquadFilter(); noiseFilter.type = 'bandpass'; noiseFilter.frequency.value = 2600; noiseFilter.Q.value = 0.6;
+  // Brushing fur: soft band of noise; loudness and brightness follow stroke speed.
+  noiseFilter = actx.createBiquadFilter(); noiseFilter.type = 'bandpass'; noiseFilter.frequency.value = 1500; noiseFilter.Q.value = 0.5;
+  const brushLp = actx.createBiquadFilter(); brushLp.type = 'lowpass'; brushLp.frequency.value = 4500;
   noiseGain = actx.createGain(); noiseGain.gain.value = 0;
-  src.connect(noiseFilter).connect(noiseGain).connect(actx.destination); src.start();
-  const osc = actx.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = 48;
-  const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 220;
-  const pulse = actx.createGain(); pulse.gain.value = 0.5;
-  purrLfo = actx.createOscillator(); purrLfo.frequency.value = 25;
-  const amt = actx.createGain(); amt.gain.value = 0.5; purrLfo.connect(amt).connect(pulse.gain);
-  purrGain = actx.createGain(); purrGain.gain.value = 0;
-  osc.connect(lp).connect(pulse).connect(purrGain).connect(actx.destination);
-  osc.start(); purrLfo.start();
+  const brush = noiseSource(2, 0.35);
+  brush.connect(noiseFilter).connect(brushLp).connect(noiseGain).connect(actx.destination);
+  brush.start();
   if (actx.state === 'suspended') actx.resume();
 }
+// Every sample playback goes through here, so the browser test can count them.
+let samplesPlayed = 0;
+function playSample(name, opts) { samplesPlayed++; press(name, opts); }
 
 /* ---------- haptics: only through the native Mac wrapper bridge ---------- */
 const bridge = () => window.webkit?.messageHandlers?.haptic;
+// A Mac app that makes the fur texture natively announces it; the page then only reports which part of the cat the
+// pointer is over, and pointer strokes send no per-step pulses (keyboard petting and buttons still do).
+const nativeTexture = () => !!window.petTheCatNative?.texture && !!bridge();
+let sentZone = null; // unknown until the first report, so a fresh page's first 'none' is sent too
+function reportZone(zone) {
+  if (!nativeTexture() || zone === sentZone) return;
+  sentZone = zone;
+  try { bridge().postMessage({ kind: 'zone', zone }); } catch { /* ignore */ }
+}
 const gate = makeHapticGate(50, 25);
 function haptic(kind) {
   const b = bridge(); if (!b || document.hidden || !document.hasFocus()) return;
@@ -104,18 +158,24 @@ function haptic(kind) {
   try { b.postMessage({ kind }); } catch { /* ignore */ }
 }
 
-function tick(intensity, zone) {
-  haptic(zone === 'tail' ? 'bump' : 'tick');
-  if (!state.sound || !state.armed) return;
-  const name = zone === 'tail' ? 'low-thumps' : (Math.random() < 0.25 ? 'hi75-soft' : 'uhk-soft');
-  press(name, { volume: Math.min(0.5, 0.06 + intensity * 0.3), playbackRate: (zone === 'tail' ? 1 : 0.8) + Math.random() * 0.25 });
+// One stroke step. Haptics fire per step; sound does not (strokes are heard through the brushing noise), except a
+// soft thump on the tail at most every THUMP_GAP ms.
+let lastThump = -1e9;
+function tick(intensity, zone, fromPointer = false) {
+  if (!(fromPointer && nativeTexture())) haptic(zone === 'tail' ? 'bump' : 'tick');
+  if (zone !== 'tail' || !state.sound || !state.armed) return;
+  const now = performance.now(); if (now - lastThump < THUMP_GAP) return; lastThump = now;
+  playSample('low-thumps', { volume: Math.min(0.35, 0.08 + intensity * 0.2), playbackRate: 0.9 + Math.random() * 0.15 });
 }
+// First touch on the cat: one soft pat.
+function pat() { if (state.sound && state.armed) playSample('uhk-soft', { volume: 0.18, playbackRate: 0.8 + Math.random() * 0.1 }); }
 
 /* ---------- petting ---------- */
 const zoneAt = (x, y) => zoneAtMask(mask, x, y);
 
 function sprinkle(x, y, a) {
   const cur = state.cur; if (!cur) return;
+  fadeLeft = FADE_MS;
   rg.lineCap = 'round';
   for (let i = 0; i < 16; i++) {
     const sx = x + (Math.random() - 0.5) * 90, sy = y + (Math.random() - 0.5) * 90;
@@ -129,24 +189,25 @@ function sprinkle(x, y, a) {
   }
 }
 
-function petMove(x, y, dt, pressure) {
+function petMove(x, y, dt, pressure, fromPointer = false) {
+  wake();
   const dx = x - state.lastX, dy = y - state.lastY, dist = Math.hypot(dx, dy);
   const v = dist / Math.max(dt, 1) * 1000;
   const frames = Math.max(dt, 1) / (1000 / 60); // per-60Hz-frame rates below, so 120 Hz input feels the same
   state.speed += (Math.min(v, 1800) - state.speed) * (1 - Math.pow(0.65, frames));
   const z = zoneAt(x, y); state.zone = z;
+  if (fromPointer) reportZone(z);
   if (z !== 'none') {
     const inten = Math.min(1, state.speed / 900 + pressure * 0.5);
     state.accum += dist;
     const step = 38 - Math.min(14, pressure * 10);
     let n = 0;
-    while (state.accum > step && n++ < 2) { state.accum -= step; tick(Math.max(0.15, inten), z); }
+    while (state.accum > step && n++ < 2) { state.accum -= step; tick(Math.max(0.15, inten), z, fromPointer); }
     if (state.accum > step) state.accum = 0;
-    state.purr = Math.min(1, state.purr + dist / 1400 + pressure * 0.01 * Math.min(frames, 4));
     if (dist > 1) sprinkle(x, y, Math.atan2(dy, dx));
     if (actx && noiseGain && state.sound) {
-      noiseGain.gain.setTargetAtTime(Math.min(0.05, state.speed / 40000) * (z === 'body' ? 1 : 0.4), actx.currentTime, 0.04);
-      noiseFilter.frequency.setTargetAtTime(1800 + state.speed * 2, actx.currentTime, 0.05);
+      noiseGain.gain.setTargetAtTime(brushLevel(state.speed, z), actx.currentTime, 0.06);
+      noiseFilter.frequency.setTargetAtTime(1100 + Math.min(state.speed, 1800) * 0.8, actx.currentTime, 0.08);
     }
   }
   state.lastX = x; state.lastY = y;
@@ -159,29 +220,30 @@ canvas.addEventListener('pointermove', (e) => {
   const [x, y] = toCanvas(e), now = performance.now();
   if (!state.inside) { state.lastX = x; state.lastY = y; state.lastT = now; }
   state.inside = true; state.px = x; state.py = y;
-  petMove(x, y, now - state.lastT, e.pointerType === 'mouse' ? state.pressure : (e.pressure || 0)); state.lastT = now;
+  petMove(x, y, now - state.lastT, e.pointerType === 'mouse' ? state.pressure : (e.pressure || 0), true); state.lastT = now;
 });
-canvas.addEventListener('pointerleave', () => { state.inside = false; state.speed = 0; stopNoise(); });
+canvas.addEventListener('pointerleave', () => { wake(); state.inside = false; state.speed = 0; stopNoise(); reportZone('none'); });
 canvas.addEventListener('pointerdown', (e) => {
-  arm(); state.down = true; canvas.setPointerCapture?.(e.pointerId);
+  wake(); arm(); state.down = true; canvas.setPointerCapture?.(e.pointerId);
   const [x, y] = toCanvas(e); state.px = x; state.py = y; state.inside = true; state.lastX = x; state.lastY = y; state.lastT = performance.now();
-  if (hit(x, y)) tick(0.5, zoneAt(x, y));
+  if (hit(x, y)) { tick(0.5, zoneAt(x, y), true); pat(); }
 });
-const release = () => { state.down = false; state.pressure = 0; };
+const release = () => { state.down = false; state.pressure = 0; wake(); };
 canvas.addEventListener('pointerup', release); canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('webkitmouseforcewillbegin', (e) => e.preventDefault());
-canvas.addEventListener('webkitmouseforcechanged', (e) => { state.pressure = Math.max(0, Math.min(2, (e.webkitForce || 1) - 1)); if (!pressureSeen) { pressureSeen = true; updateStatus(); } });
+canvas.addEventListener('webkitmouseforcechanged', (e) => { wake(); state.pressure = Math.max(0, Math.min(2, (e.webkitForce || 1) - 1)); if (!pressureSeen) { pressureSeen = true; updateStatus(); } });
 let pressureSeen = false;
 function stopNoise() { if (actx && noiseGain) noiseGain.gain.setTargetAtTime(0, actx.currentTime, 0.08); }
 
 // Clear every held-input state (focus loss, tab hidden, pointer lost).
 function resetInput() {
   state.down = false; state.pressure = 0; state.kbd = null;
-  state.inside = false; state.speed = 0; state.accum = 0; stopNoise();
+  state.inside = false; state.speed = 0; state.accum = 0; stopNoise(); reportZone('none'); wake();
 }
 window.addEventListener('blur', resetInput);
 // Read-only view for the browser test, so it can check held-input state directly.
-window.__petState = () => ({ kbd: state.kbd, inside: state.inside });
+window.__petState = () => ({ kbd: state.kbd, inside: state.inside, samples: samplesPlayed, draws, hasCoat: !!state.cur,
+  brush: noiseGain ? noiseGain.gain.value : 0 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) resetInput(); });
 canvas.addEventListener('lostpointercapture', release);
 
@@ -194,7 +256,7 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => {
   const a = keyUpAction(e);
-  if (a && a === state.kbd) { state.kbd = null; state.inside = false; state.speed = 0; state.accum = 0; stopNoise(); }
+  if (a && a === state.kbd) { wake(); state.kbd = null; state.inside = false; state.speed = 0; state.accum = 0; stopNoise(); }
 });
 let phase = 0;
 function kbdStep(dt) {
@@ -212,34 +274,42 @@ const sw = $('swatches');
 COATS.forEach((c, i) => {
   const b = document.createElement('button'); b.className = 'sw'; b.setAttribute('aria-label', c.name); b.title = c.name;
   b.style.backgroundImage = `url(/cats/t_${c.id}.webp)`;
-  b.onclick = () => { arm(); setCoat(i); sync(); if (state.sound) press('tonal-on', { volume: 0.2 }); haptic('bump'); };
+  b.onclick = () => { arm(); setCoat(i, true); sync(); if (state.sound) playSample('tonal-on', { volume: 0.2 }); haptic('bump'); };
   sw.appendChild(b);
 });
 function sync() { [...sw.children].forEach((b, i) => b.setAttribute('aria-pressed', i === state.coat)); }
 sync();
+function showSound() { $('sound').setAttribute('aria-checked', state.sound); $('sound').textContent = state.sound ? '🔊' : '🔇'; }
 function toggleSound() {
-  state.sound = !state.sound; arm();
-  $('sound').setAttribute('aria-checked', state.sound); $('sound').textContent = state.sound ? '🔊' : '🔇';
-  press(state.sound ? 'synth-on' : 'synth-off', { volume: 0.25 });
+  state.sound = !state.sound; arm(); showSound(); savePrefs(['sound']);
+  if (!state.sound) stopNoise(); // mid-stroke too: the frame loop only silences brushing once the stroke ends
+  playSample(state.sound ? 'synth-on' : 'synth-off', { volume: 0.25 });
 }
 $('sound').onclick = toggleSound;
-function setDark(v) {
-  state.dark = v; $('moon').setAttribute('aria-checked', v); $('moon').textContent = v ? '☀' : '☾';
+function setDark(v, persist = true) {
+  wake(); state.dark = v; if (persist) { chosenDark = v; savePrefs(['dark']); } $('moon').setAttribute('aria-checked', v); $('moon').textContent = v ? '☀' : '☾';
   document.documentElement.dataset.theme = v ? 'dark' : 'light';
   document.querySelector('meta[name=theme-color]').content = v ? '#101722' : '#fbf5ec';
 }
-$('moon').onclick = () => { arm(); setDark(!state.dark); if (state.sound) press('synth-on', { volume: 0.2 }); };
+$('moon').onclick = () => { arm(); setDark(!state.dark); if (state.sound) playSample('synth-on', { volume: 0.2 }); };
 $('full').onclick = () => { arm(); if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.(); };
 function updateStatus() {
-  const bits = [bridge()
-    ? '햅틱: Mac 앱 연결됨 (신호 전송 중, 실제 트랙패드 진동은 미검증)'
-    : '햅틱 없음: 이 화면은 소리와 애니메이션만 나옵니다. 트랙패드 햅틱은 별도 Mac 앱 안에서만 시도됩니다.'];
+  const bits = [!bridge()
+    ? '햅틱 없음: 이 화면은 소리와 애니메이션만 나옵니다. 트랙패드 햅틱은 별도 Mac 앱 안에서만 시도됩니다.'
+    : nativeTexture()
+      ? '햅틱: Mac 앱이 털 질감을 냅니다 (강도와 끄기는 메뉴 막대의 Haptics에서)'
+      : '햅틱: Mac 앱 연결됨'];
   if (pressureSeen) bits.push('압력 입력 감지됨(Safari Force Touch)');
   bits.push(...Object.values(notices));
-  $('status').textContent = bits.join(' · ');
+  const text = bits.join(' · ');
+  if ($('status').textContent !== text) $('status').textContent = text; // a live region: announce changes only
 }
 updateStatus();
-if (new URLSearchParams(location.search).get('theme') === 'dark') setDark(true); // no sound, no gesture needed
+showSound();
+if (!state.sound) $('hint').textContent = '소리는 꺼져 있어요. 🔇 버튼이나 M 키로 켤 수 있어요';
+// ?theme=dark forces the dark theme for this visit without saving it; otherwise the saved theme applies.
+if (new URLSearchParams(location.search).get('theme') === 'dark') setDark(true, false); // no sound, no gesture needed
+else if (prefs.dark) setDark(true, false);
 
 /* ---------- loop ---------- */
 let last = performance.now();
@@ -248,13 +318,12 @@ function frame(now) {
   kbdStep(dt);
   state.speed *= Math.pow(0.9, dt / 16);
   const petting = state.inside && state.zone !== 'none' && state.speed > 40;
-  state.purr = Math.max(0, state.purr - (petting ? 0 : dt / 5000));
-  if (actx && purrGain) {
-    purrGain.gain.setTargetAtTime(state.sound && state.armed ? state.purr * 0.5 : 0, actx.currentTime, 0.15);
-    purrLfo.frequency.setTargetAtTime(22 + state.purr * 6, actx.currentTime, 0.2);
+  if (actx && noiseGain) {
     if (!petting) noiseGain.gain.setTargetAtTime(0, actx.currentTime, 0.08);
   }
-  // draw
+  if (!state.kbd && now - lastActive > IDLE_AFTER && fadeLeft <= 0) { requestAnimationFrame(frame); return; }
+  fadeLeft -= dt;
+  draws++;
   if (state.cur) ctx.drawImage(state.cur.img, 0, 0, W, H); else { ctx.fillStyle = '#d9c3a0'; ctx.fillRect(0, 0, W, H); }
   ctx.drawImage(ruffle, 0, 0);
   rg.globalCompositeOperation = 'destination-out'; rg.fillStyle = `rgba(0,0,0,${fadeAlpha(dt)})`; rg.fillRect(0, 0, W, H); rg.globalCompositeOperation = 'source-over';

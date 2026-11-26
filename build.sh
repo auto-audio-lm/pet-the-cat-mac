@@ -12,15 +12,26 @@ IDENTITY="${CODESIGN_IDENTITY:--}"
 APP="build/Pet the Cat.app"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 for arch in arm64 x86_64; do
   swiftc -O -target "$arch-apple-macos12.3" PetTheCat.swift -o "build/PetTheCat-$arch"
 done
 lipo -create build/PetTheCat-arm64 build/PetTheCat-x86_64 -output "$APP/Contents/MacOS/PetTheCat"
 cp Info.plist "$APP/Contents/Info.plist"
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP/Contents/Info.plist"
 
 "$APP/Contents/MacOS/PetTheCat" --selftest
+# Also run the Intel slice when this Mac can (Apple silicon with Rosetta). On an Intel Mac this repeats the
+# x86_64 run, and the arm64 slice cannot be run there at all.
+if arch -x86_64 /usr/bin/true 2>/dev/null; then
+  if ! out="$(arch -x86_64 "$APP/Contents/MacOS/PetTheCat" --selftest)"; then
+    echo "$out" | grep FAIL || true
+    echo "x86_64 selftest failed" >&2
+    exit 1
+  fi
+  echo "selftest ok (x86_64)"
+fi
 
 if [ "$IDENTITY" = "-" ]; then
   codesign --force --sign - "$APP"

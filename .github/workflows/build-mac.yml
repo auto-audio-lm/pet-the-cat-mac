@@ -7,6 +7,12 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# A newer push to the same pull request cancels its older run, which may still be waiting for a scarce macOS
+# runner. Runs for main and tags are not cancelled once started, but GitHub keeps only one pending run per group,
+# so a queued main run can still be replaced by a newer push.
+concurrency:
+  group: build-mac-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   build:
     runs-on: macos-latest
@@ -15,6 +21,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      # Fail a mistagged release before the build and notarization, not after.
+      - name: Check tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(plutil -extract CFBundleShortVersionString raw Info.plist)"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match the app version $version (Info.plist CFBundleShortVersionString)."
+            exit 1
+          fi
 
       # Signing is all-or-nothing. With all five secrets the app is signed with a Developer ID certificate and
       # notarized, so Gatekeeper opens it without a warning. With none it is ad-hoc signed and Gatekeeper blocks a
@@ -82,6 +101,15 @@ jobs:
 
       - name: Build universal app
         run: ./build.sh
+
+      # Opens the app, loads the live page and checks the haptic bridge; plays no haptics. It depends on the live
+      # site and the runner's window server, so a failure is reported but does not block the build.
+      - name: Smoke test (launch and load the page)
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          "build/Pet the Cat.app/Contents/MacOS/PetTheCat" --smoke-test || { echo "::warning::App smoke test failed (see log)."; exit 1; }
 
       - name: Notarize and staple
         if: steps.signing.outputs.enabled == 'true'
@@ -159,6 +187,18 @@ jobs:
         with:
           name: PetTheCat-mac
       - run: sha256sum -c PetTheCat-mac.zip.sha256
+      # The tag must match the app's version, so a release is never published with a stale Info.plist.
+      - name: Check tag matches CFBundleShortVersionString
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          unzip -p PetTheCat-mac.zip "Pet the Cat.app/Contents/Info.plist" > Info.plist
+          version="$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleShortVersionString"])' Info.plist)"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match the app version $version (Info.plist CFBundleShortVersionString)."
+            exit 1
+          fi
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |

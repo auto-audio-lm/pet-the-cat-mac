@@ -7,21 +7,28 @@
 <title>고양이 쓰다듬기 시뮬레이터</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23fbf5ec'/%3E%3Cpath d='M6 24 7 8 16 15Q20 13 24 15L34 8 33 25C31 37 8 37 6 24Z' fill='%23453327'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/src/style.css">
+<script>
+  // Apply the saved or requested dark theme before first paint (main.js sets the rest of the UI state).
+  try {
+    var dark = new URLSearchParams(location.search).get('theme') === 'dark' || JSON.parse(localStorage.getItem('petTheCat.prefs') || '{}').dark === true;
+    if (dark) { document.documentElement.dataset.theme = 'dark'; document.querySelector('meta[name=theme-color]').content = '#101722'; }
+  } catch (e) { /* defaults */ }
+</script>
 </head>
 <body>
 <main>
   <section class="stage" id="stage" aria-label="고양이 쓰다듬기">
-    <canvas id="c" width="1200" height="800"></canvas>
+    <canvas id="c" width="1200" height="800" role="img" aria-label="고양이. 포인터로 등이나 머리를 쓸거나, 스페이스(등)와 T(꼬리) 키를 누르고 있으면 쓰다듬어요."></canvas>
     <div class="hint" id="hint">한 번 클릭하면 소리가 켜져요</div>
-    <button class="round moon" id="moon" role="switch" aria-checked="false" aria-label="달빛">☾</button>
+    <button class="round moon" id="moon" role="switch" aria-checked="false" aria-label="어두운 테마" title="어두운 테마">☾</button>
   </section>
   <div class="bar">
     <div class="swatches" id="swatches" role="group" aria-label="고양이 고르기"></div>
     <button class="tool" id="sound" role="switch" aria-checked="true" aria-label="소리" title="소리">🔊</button>
     <button class="tool" id="full" aria-label="전체 화면" title="전체 화면"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
   </div>
-  <p class="help">등이나 머리를 쓸어 보세요. 키보드는 스페이스(등), T(꼬리). 소리는 Button Sounds 샘플이에요.</p>
-  <p class="status" id="status"></p>
+  <p class="help">등이나 머리를 쓸어 보세요. 키보드는 스페이스(등), T(꼬리), M(소리 켜기·끄기). 소리는 Button Sounds 샘플이에요.</p>
+  <p class="status" id="status" role="status" aria-live="polite"></p>
   <footer>고양이 이미지와 손은 AI로 생성. Sounds: <a href="https://buttons.joshwcomeau.com/" target="_blank" rel="noopener">Button Sounds</a> by Josh W. Comeau (MIT)</footer>
 </main>
 <script type="module" src="/src/main.js"></script>
