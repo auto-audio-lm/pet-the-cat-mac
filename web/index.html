@@ -7,6 +7,13 @@
 <title>고양이 쓰다듬기 시뮬레이터</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23fbf5ec'/%3E%3Cpath d='M6 24 7 8 16 15Q20 13 24 15L34 8 33 25C31 37 8 37 6 24Z' fill='%23453327'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/src/style.css">
+<script>
+  // Apply the saved or requested dark theme before first paint (main.js sets the rest of the UI state).
+  try {
+    var dark = new URLSearchParams(location.search).get('theme') === 'dark' || JSON.parse(localStorage.getItem('petTheCat.prefs') || '{}').dark === true;
+    if (dark) { document.documentElement.dataset.theme = 'dark'; document.querySelector('meta[name=theme-color]').content = '#101722'; }
+  } catch (e) { /* defaults */ }
+</script>
 </head>
 <body>
 <main>

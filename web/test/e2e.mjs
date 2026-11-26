@@ -157,8 +157,10 @@ try {
   ok('idle page stops redrawing', d2 === d1, `${d1} -> ${d2} in 1 s`);
   await p.mouse.move(600, 400); await p.mouse.move(640, 410, { steps: 5 }); await sleep(300);
   ok('pointer movement resumes drawing', (await drawsNow()) > d2, `${d2} -> ${await drawsNow()}`);
-  await p.click('#moon'); const d3 = await drawsNow(); await sleep(300);
-  ok('theme change redraws', (await drawsNow()) > d3);
+  await sleep(3400); const d3 = await drawsNow(); await sleep(300);
+  ok('idle again after movement stops', (await drawsNow()) === d3);
+  await p.$eval('#moon', (b) => b.click()); await sleep(300);  // no pointer movement, so only setDark can wake drawing
+  ok('theme change redraws', (await drawsNow()) > d3, `${d3} -> ${await drawsNow()}`);
   await p.close();
 
   // Accessibility: named canvas, announced status, visible focus on a selected swatch, documented shortcuts.
@@ -192,6 +194,17 @@ try {
   p = await open({ keepPrefs: true, q: '?theme=dark' }); await p.close();
   p = await open({ keepPrefs: true });
   ok('prefs: ?theme=dark is not saved', (await p.evaluate(() => document.documentElement.dataset.theme)) !== 'dark');
+  await p.close();
+
+  // A saved coat whose image fails at startup falls back to the first coat instead of a blank cat.
+  p = await browser.newPage(); await p.setViewport({ width: 1200, height: 800 });
+  await p.evaluateOnNewDocument(() => { try { localStorage.setItem('petTheCat.prefs', JSON.stringify({ coat: 2 })); } catch {} });
+  await p.setRequestInterception(true);
+  p.on('request', (r) => (r.url().includes('/cats/calico.webp') ? r.respond({ status: 404, body: 'x' }) : r.continue()));
+  await p.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle0' });
+  await waitStatus(p, () => document.querySelector('#swatches button:nth-child(1)').getAttribute('aria-pressed') === 'true');
+  ok('saved coat failing at startup falls back to the first coat', (await pressedCoats(p))[0] === 'true' && (await status(p)).includes('삼색이'), await status(p));
+  await p.evaluate(() => localStorage.removeItem('petTheCat.prefs'));
   await p.close();
 
   // Static hosts answer a missing file with 200 + index.html; that must count as missing too.

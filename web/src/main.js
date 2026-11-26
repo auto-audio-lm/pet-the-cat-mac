@@ -68,6 +68,10 @@ const hit = (x, y) => hitMask(mask, x, y);
 // (gone after ~2 s). An idle window, even with the pointer resting on it, then costs no drawing.
 const IDLE_AFTER = 3000;
 let lastActive = performance.now(), draws = 0;
+// Fur strokes fade per drawn frame (dt capped at 64 ms), so at a low frame rate the fade takes longer than
+// IDLE_AFTER of wall time: keep drawing until this much (capped) fade time has run since the last stroke.
+let fadeLeft = 0;
+const FADE_MS = 3000;
 const wake = () => { lastActive = performance.now(); };
 
 /* ---------- state ---------- */
@@ -88,7 +92,14 @@ async function setCoat(i) {
     state.coat = i; state.cur = c; sync(); setNotice('coat'); wake();
     if (changed) savePrefs();
   } catch {
-    if (wantCoat === i) { wantCoat = state.coat; setNotice('coat', `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`); }
+    if (wantCoat === i) {
+      const msg = `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`;
+      setNotice('coat', msg);
+      // Nothing shown yet (e.g. the saved coat failed at startup): fall back to the first coat instead of a blank
+      // cat, and keep the notice so it is clear why another cat appeared.
+      if (!state.cur && i !== 0) setCoat(0).then(() => { if (wantCoat === 0) setNotice('coat', msg); });
+      else wantCoat = state.coat;
+    }
   }
 }
 setCoat(prefs.coat);
@@ -157,6 +168,7 @@ const zoneAt = (x, y) => zoneAtMask(mask, x, y);
 
 function sprinkle(x, y, a) {
   const cur = state.cur; if (!cur) return;
+  fadeLeft = FADE_MS;
   rg.lineCap = 'round';
   for (let i = 0; i < 16; i++) {
     const sx = x + (Math.random() - 0.5) * 90, sy = y + (Math.random() - 0.5) * 90;
@@ -209,10 +221,10 @@ canvas.addEventListener('pointerdown', (e) => {
   const [x, y] = toCanvas(e); state.px = x; state.py = y; state.inside = true; state.lastX = x; state.lastY = y; state.lastT = performance.now();
   if (hit(x, y)) { tick(0.5, zoneAt(x, y), true); pat(); }
 });
-const release = () => { state.down = false; state.pressure = 0; };
+const release = () => { state.down = false; state.pressure = 0; wake(); };
 canvas.addEventListener('pointerup', release); canvas.addEventListener('pointercancel', release);
 canvas.addEventListener('webkitmouseforcewillbegin', (e) => e.preventDefault());
-canvas.addEventListener('webkitmouseforcechanged', (e) => { state.pressure = Math.max(0, Math.min(2, (e.webkitForce || 1) - 1)); if (!pressureSeen) { pressureSeen = true; updateStatus(); } });
+canvas.addEventListener('webkitmouseforcechanged', (e) => { wake(); state.pressure = Math.max(0, Math.min(2, (e.webkitForce || 1) - 1)); if (!pressureSeen) { pressureSeen = true; updateStatus(); } });
 let pressureSeen = false;
 function stopNoise() { if (actx && noiseGain) noiseGain.gain.setTargetAtTime(0, actx.currentTime, 0.08); }
 
@@ -280,7 +292,8 @@ function updateStatus() {
       : '햅틱: Mac 앱 연결됨'];
   if (pressureSeen) bits.push('압력 입력 감지됨(Safari Force Touch)');
   bits.push(...Object.values(notices));
-  $('status').textContent = bits.join(' · ');
+  const text = bits.join(' · ');
+  if ($('status').textContent !== text) $('status').textContent = text; // a live region: announce changes only
 }
 updateStatus();
 showSound();
@@ -299,7 +312,8 @@ function frame(now) {
   if (actx && noiseGain) {
     if (!petting) noiseGain.gain.setTargetAtTime(0, actx.currentTime, 0.08);
   }
-  if (!state.kbd && now - lastActive > IDLE_AFTER) { requestAnimationFrame(frame); return; }
+  if (!state.kbd && now - lastActive > IDLE_AFTER && fadeLeft <= 0) { requestAnimationFrame(frame); return; }
+  fadeLeft -= dt;
   draws++;
   if (state.cur) ctx.drawImage(state.cur.img, 0, 0, W, H); else { ctx.fillStyle = '#d9c3a0'; ctx.fillRect(0, 0, W, H); }
   ctx.drawImage(ruffle, 0, 0);
