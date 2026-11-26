@@ -1,11 +1,11 @@
 import { press, setPath, load } from 'button-sounds';
-import { W, H, hit as hitMask, zoneAt as zoneAtMask, keyAction, keyUpAction, makeHapticGate, fadeAlpha } from './logic.js';
+import { W, H, hit as hitMask, zoneAt as zoneAtMask, keyAction, keyUpAction, makeHapticGate, fadeAlpha, isAudioResponse } from './logic.js';
 
 setPath('/sounds/');
 const SOUNDS = ['uhk-soft', 'low-thumps', 'synth-on', 'synth-off', 'tonal-on', 'hi75-soft'];
 SOUNDS.forEach(load);
 // button-sounds swallows load errors, so probe the files ourselves and tell the user when sound is missing.
-Promise.all(SOUNDS.map((n) => fetch(`/sounds/${n}.mp3`, { method: 'HEAD' }).then((r) => r.ok)))
+Promise.all(SOUNDS.map((n) => fetch(`/sounds/${n}.mp3`, { method: 'HEAD' }).then(isAudioResponse)))
   .then((r) => { if (r.some((v) => !v)) setNotice('sound', '일부 소리 파일을 못 불러와서 소리가 나지 않을 수 있어요.'); })
   .catch(() => setNotice('sound', '소리 파일을 확인하지 못했어요. 소리가 나지 않을 수 있어요.'));
 
@@ -100,7 +100,7 @@ const bridge = () => window.webkit?.messageHandlers?.haptic;
 const gate = makeHapticGate(50, 25);
 function haptic(kind) {
   const b = bridge(); if (!b || document.hidden || !document.hasFocus()) return;
-  if (!gate(kind, performance.now())) return; // rate limit: ticks 50 ms, bumps 25 ms
+  if (!gate(kind, performance.now())) return; // rate limit: see makeHapticGate
   try { b.postMessage({ kind }); } catch { /* ignore */ }
 }
 
@@ -132,7 +132,8 @@ function sprinkle(x, y, a) {
 function petMove(x, y, dt, pressure) {
   const dx = x - state.lastX, dy = y - state.lastY, dist = Math.hypot(dx, dy);
   const v = dist / Math.max(dt, 1) * 1000;
-  state.speed += (Math.min(v, 1800) - state.speed) * 0.35;
+  const frames = Math.max(dt, 1) / (1000 / 60); // per-60Hz-frame rates below, so 120 Hz input feels the same
+  state.speed += (Math.min(v, 1800) - state.speed) * (1 - Math.pow(0.65, frames));
   const z = zoneAt(x, y); state.zone = z;
   if (z !== 'none') {
     const inten = Math.min(1, state.speed / 900 + pressure * 0.5);
@@ -141,7 +142,7 @@ function petMove(x, y, dt, pressure) {
     let n = 0;
     while (state.accum > step && n++ < 2) { state.accum -= step; tick(Math.max(0.15, inten), z); }
     if (state.accum > step) state.accum = 0;
-    state.purr = Math.min(1, state.purr + dist / 1400 + pressure * 0.01);
+    state.purr = Math.min(1, state.purr + dist / 1400 + pressure * 0.01 * Math.min(frames, 4));
     if (dist > 1) sprinkle(x, y, Math.atan2(dy, dx));
     if (actx && noiseGain && state.sound) {
       noiseGain.gain.setTargetAtTime(Math.min(0.05, state.speed / 40000) * (z === 'body' ? 1 : 0.4), actx.currentTime, 0.04);
@@ -179,6 +180,8 @@ function resetInput() {
   state.inside = false; state.speed = 0; state.accum = 0; stopNoise();
 }
 window.addEventListener('blur', resetInput);
+// Read-only view for the browser test, so it can check held-input state directly.
+window.__petState = () => ({ kbd: state.kbd, inside: state.inside });
 document.addEventListener('visibilitychange', () => { if (document.hidden) resetInput(); });
 canvas.addEventListener('lostpointercapture', release);
 

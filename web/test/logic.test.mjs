@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { keyAction, keyUpAction, makeHapticGate, hit, zoneAt, fadeAlpha, W } from '../src/logic.js';
+import { keyAction, keyUpAction, makeHapticGate, hit, zoneAt, fadeAlpha, isAudioResponse, W } from '../src/logic.js';
 
 const btn = { tagName: 'BUTTON' }, body = { tagName: 'BODY' };
 test('plain keys', () => {
@@ -19,6 +19,26 @@ test('focused controls keep Space', () => {
   assert.equal(keyAction({ key: ' ', target: btn }), null);
   assert.equal(keyAction({ key: ' ', target: { tagName: 'DIV', getAttribute: () => 'switch' } }), null);
   assert.equal(keyAction({ key: ' ', target: { tagName: 'INPUT' } }), null);
+});
+test('T and M still work on a focused button; typing in a text field never triggers', () => {
+  assert.equal(keyAction({ key: 't', target: btn }), 'tail');
+  assert.equal(keyAction({ key: 'm', target: btn }), 'mute');
+  for (const key of [' ', 't', 'm']) assert.equal(keyAction({ key, target: { tagName: 'INPUT' } }), null);
+  assert.equal(keyAction({ key: 't', target: { tagName: 'DIV', isContentEditable: true } }), null);
+});
+test('Korean input source: physical T / M keys still map', () => {
+  assert.equal(keyAction({ key: 'ㅅ', code: 'KeyT', target: body }), 'tail');
+  assert.equal(keyAction({ key: 'ㅡ', code: 'KeyM', target: body }), 'mute');
+  assert.equal(keyUpAction({ key: 'ㅅ', code: 'KeyT' }), 'tail');
+  // A Latin layout where the KeyT position types another letter keeps its own meaning.
+  assert.equal(keyAction({ key: 'y', code: 'KeyT', target: body }), null);
+});
+test('sound probe needs an audio response, not an HTML fallback', () => {
+  const res = (ok, type) => ({ ok, headers: { get: () => type } });
+  assert.equal(isAudioResponse(res(true, 'audio/mpeg')), true);
+  assert.equal(isAudioResponse(res(true, 'text/html')), false);
+  assert.equal(isAudioResponse(res(false, 'audio/mpeg')), false);
+  assert.equal(isAudioResponse(res(true, null)), false);
 });
 test('keyup mapping', () => { assert.equal(keyUpAction({ key: ' ' }), 'body'); assert.equal(keyUpAction({ key: 'T' }), 'tail'); assert.equal(keyUpAction({ key: 'x' }), null); });
 test('haptic gate: tick 50ms, bump 25ms, bump not starved', () => {

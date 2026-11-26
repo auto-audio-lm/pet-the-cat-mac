@@ -1,25 +1,41 @@
 // Pure helpers (no DOM access) so they can be unit tested with node:test.
 export const W = 1200, H = 800, TAIL_X = 800;
 
-const INTERACTIVE = new Set(['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'A', 'SUMMARY']);
+// Elements that take typed text: no shortcut may fire there.
+const TEXT_ENTRY = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+export const isTextEntry = (t) => !!t && (TEXT_ENTRY.has(t.tagName) || !!t.isContentEditable);
+// Elements that Space activates: Space must keep working there, but T and M still may fire
+// (Chrome keeps focus on a clicked button, which would otherwise disable the shortcuts until the next click).
+const ACTIVATABLE = new Set(['BUTTON', 'A', 'SUMMARY']);
 export function isInteractiveTarget(t) {
   if (!t) return false;
-  return INTERACTIVE.has(t.tagName) || !!t.isContentEditable || (t.getAttribute?.('role') === 'switch');
+  return isTextEntry(t) || ACTIVATABLE.has(t.tagName) || (t.getAttribute?.('role') === 'switch');
+}
+
+// Which shortcut a key is: matched on e.key, then on the physical key (e.code) so T and M also work while a
+// non-Latin input source is active (with the Korean source e.key is 'ㅅ' / 'ㅡ').
+function shortcut(e) {
+  const k = (e.key || '').toLowerCase();
+  if (e.key === ' ' || (!e.key && e.code === 'Space')) return 'space';
+  if (k === 't' || (k.length === 1 && !/[a-z]/.test(k) && e.code === 'KeyT')) return 't';
+  if (k === 'm' || (k.length === 1 && !/[a-z]/.test(k) && e.code === 'KeyM')) return 'm';
+  return null;
 }
 
 // Returns 'body' | 'tail' | 'mute' | null for a keydown event (or event-like object).
 export function keyAction(e) {
   if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return null;
-  if (isInteractiveTarget(e.target)) return null;
-  const k = (e.key || '').toLowerCase();
-  if (k === 'm') return e.repeat ? null : 'mute';
-  if (e.key === ' ') return 'body';
-  if (k === 't') return 'tail';
+  if (isTextEntry(e.target)) return null;
+  const s = shortcut(e);
+  if (s === 'space') return isInteractiveTarget(e.target) ? null : 'body';
+  if (s === 'm') return e.repeat ? null : 'mute';
+  if (s === 't') return 'tail';
   return null;
 }
-export const keyUpAction = (e) => (e.key === ' ' ? 'body' : (e.key || '').toLowerCase() === 't' ? 'tail' : null);
+export const keyUpAction = (e) => ({ space: 'body', t: 'tail' })[shortcut(e)] ?? null;
 
-// Rate limiter: ticks at most every tickGap ms, bumps at most every bumpGap ms (bumps are rarer and not starved by ticks).
+// Rate limiter: ticks at most every tickGap ms; bumps at most every bumpGap ms after any haptic and at most one per
+// 120 ms (bumps are rarer and not starved by ticks).
 export function makeHapticGate(tickGap = 50, bumpGap = 25) {
   let lastAny = -1e9, lastBump = -1e9;
   return (kind, now) => {
@@ -36,3 +52,6 @@ export const hit = (mask, x, y) => !!mask && x >= 0 && y >= 0 && x < W && y < H 
 export const zoneAt = (mask, x, y) => (!hit(mask, x, y) ? 'none' : x > TAIL_X ? 'tail' : 'body');
 // Per-frame alpha so the fur fade has the same speed at 60 and 120 Hz.
 export const fadeAlpha = (dt, perFrame = 0.045) => 1 - Math.pow(1 - perFrame, Math.max(0, dt) / (1000 / 60));
+// A sound probe passes only when it got an audio file: a static host (vite preview, Cloudflare Pages) answers a
+// missing path with 200 and index.html, so `ok` alone is not enough.
+export const isAudioResponse = (r) => !!r && r.ok && /^audio\//i.test(r.headers?.get?.('content-type') || '');

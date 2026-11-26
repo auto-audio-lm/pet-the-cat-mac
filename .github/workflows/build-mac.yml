@@ -10,8 +10,11 @@ permissions:
 jobs:
   build:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Build universal app (ad-hoc signed, not notarized)
         run: |
           set -euxo pipefail
@@ -39,18 +42,23 @@ jobs:
             PetTheCat-mac.zip.sha256
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      # A new advisory in a dependency should be visible but must not block a tag release by itself.
       - run: npm audit --audit-level=high
+        continue-on-error: true
       - run: npm test
       - run: npm run test:e2e   # builds (checks assets exist) and runs the browser test on the runner's Chrome
   release:

@@ -8,7 +8,9 @@ const CHROME = process.env.CHROME_PATH || ['/usr/bin/google-chrome', '/usr/bin/c
 if (!CHROME) { console.error('No Chrome found; set CHROME_PATH'); process.exit(2); }
 const PORT = 4173, sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const srv = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' });
-for (let i = 0; i < 40; i++) { try { if ((await fetch(`http://localhost:${PORT}/`)).ok) break; } catch {} await sleep(250); }
+let up = false;
+for (let i = 0; i < 40 && !up; i++) { try { up = (await fetch(`http://localhost:${PORT}/`)).ok; } catch {} if (!up) await sleep(250); }
+if (!up) { console.error(`vite preview did not answer on port ${PORT}`); srv.kill(); process.exit(2); }
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
 let failed = 0;
 const ok = (name, cond, info = '') => { if (!cond) failed++; console.log(`${cond ? 'PASS' : 'FAIL'}: ${name}${info ? '  [' + info + ']' : ''}`); };
@@ -20,13 +22,16 @@ async function open({ q = '', bridge = true, block = () => false } = {}) {
     if (withBridge) window.webkit = { messageHandlers: { haptic: { postMessage: (m) => window.__h.push([performance.now(), m.kind]) } } };
   }, bridge);
   await p.setRequestInterception(true);
-  p.on('request', (r) => (block(r.url()) ? r.respond({ status: 404, body: 'x' }) : r.continue()));
+  // block(url) returns false to pass the request through, true for a 404, or a response object.
+  p.on('request', (r) => { const b = block(r.url()); return b ? r.respond(b === true ? { status: 404, body: 'x' } : b) : r.continue(); });
   await p.goto(`http://localhost:${PORT}/${q}`, { waitUntil: 'networkidle0' });
   return p;
 }
 const status = (p) => p.$eval('#status', (e) => e.textContent);
+const sound2 = (p) => p.$eval('#sound', (e) => e.getAttribute('aria-checked'));
 const haptics = (p) => p.evaluate(() => window.__h.slice());
 const pressedCoats = (p) => p.$$eval('#swatches button', (bs) => bs.map((b) => b.getAttribute('aria-pressed')));
+const waitStatus = (p, fn, timeout = 5000) => p.waitForFunction(fn, { timeout }, ).then(() => true, () => false);
 
 try {
   let p = await open({ bridge: false });
@@ -64,18 +69,27 @@ try {
   await p.keyboard.up('t');
   await p.keyboard.down('Space'); await sleep(500);
   const n3 = (await haptics(p)).length;
+  ok('Space held: keyboard petting is active', (await p.evaluate(() => window.__petState().kbd)) === 'body' && n3 > 0, `n=${n3}`);
   await p.evaluate(() => Object.defineProperty(document, 'hidden', { value: true, configurable: true }));
   await p.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await sleep(150); const n4 = (await haptics(p)).length; await sleep(700);
-  ok('tab hidden resets held key', (await haptics(p)).length === n4, `${n3} -> ${n4} -> ${(await haptics(p)).length}`);
+  // Show the tab again while Space is still held: if the reset did not happen, haptics would resume.
+  await p.evaluate(() => Object.defineProperty(document, 'hidden', { value: false, configurable: true }));
+  const n4 = (await haptics(p)).length; await sleep(700);
+  ok('tab hidden resets held key', (await p.evaluate(() => window.__petState().kbd)) === null && (await haptics(p)).length === n4,
+    `${n3} -> ${n4} -> ${(await haptics(p)).length}`);
+  await p.keyboard.up('Space');
+  await p.click('#sound'); const before = await sound2(p); await p.keyboard.press('m');
+  ok('M still toggles sound after clicking a button', (await sound2(p)) !== before);
   await p.close();
 
   let fail = true;
   p = await open({ block: (u) => fail && u.includes('/cats/calico.webp') });
-  await p.click('#swatches button:nth-child(3)'); await sleep(500);
+  await p.click('#swatches button:nth-child(3)');
+  await waitStatus(p, () => document.getElementById('status').textContent.includes('삼색이'));
   let pr = await pressedCoats(p);
   ok('failed coat: previous coat stays selected + notice', pr[0] === 'true' && pr[2] === 'false' && (await status(p)).includes('삼색이'), await status(p));
-  fail = false; await p.click('#swatches button:nth-child(3)'); await sleep(800);
+  fail = false; await p.click('#swatches button:nth-child(3)');
+  await waitStatus(p, () => document.querySelector('#swatches button:nth-child(3)').getAttribute('aria-pressed') === 'true');
   pr = await pressedCoats(p);
   ok('failed coat: retry succeeds and notice clears', pr[2] === 'true' && !(await status(p)).includes('삼색이'), await status(p));
   await p.close();
@@ -85,14 +99,19 @@ try {
   ok('mask failure shows notice', (await status(p)).includes('고양이 영역'), await status(p));
   await p.click('#swatches button:nth-child(2)'); await sleep(800);
   ok('mask notice survives a successful coat load', (await status(p)).includes('고양이 영역'), await status(p));
-  fail = false; await sleep(3800);
-  ok('mask recovers by itself', !(await status(p)).includes('고양이 영역'), await status(p));
+  fail = false;
+  ok('mask recovers by itself', await waitStatus(p, () => !document.getElementById('status').textContent.includes('고양이 영역'), 8000), await status(p));
   await p.mouse.click(600, 400); await p.mouse.move(540, 400); await p.mouse.move(660, 420, { steps: 20 });
   ok('petting works after mask recovery', (await haptics(p)).length > 0);
   await p.close();
 
   p = await open({ block: (u) => u.includes('/sounds/low-thumps.mp3') });
   ok('missing sound file shows notice', (await status(p)).includes('소리 파일'), await status(p));
+  await p.close();
+
+  // Static hosts answer a missing file with 200 + index.html; that must count as missing too.
+  p = await open({ block: (u) => u.includes('/sounds/low-thumps.mp3') && { status: 200, contentType: 'text/html', body: '<!doctype html><html></html>' } });
+  ok('sound replaced by an HTML fallback shows notice', (await status(p)).includes('소리 파일'), await status(p));
   await p.close();
 } catch (e) { failed++; console.log('ERROR', e.stack); }
 await browser.close(); srv.kill();

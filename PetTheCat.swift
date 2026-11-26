@@ -18,14 +18,28 @@ func navigationAllowed(_ url: URL?) -> Bool {
     return url.scheme == "https" && url.host == allowedHost
 }
 
-// Minimum gap between haptics: 25 ms for bumps, 50 ms for ticks. Mirrors the web gate; kept small so a throttled
-// call is a short gap rather than a lost gesture.
+// Minimum gap between haptics: 25 ms for bumps, 50 ms for ticks. A backstop for the web gate (which also limits
+// bumps to one per 120 ms); kept small so a throttled call is a short gap rather than a lost gesture.
 struct HapticGate {
     var last: TimeInterval = -1000
     mutating func allow(kind: String, now: TimeInterval) -> Bool {
         let gap: TimeInterval = kind == "bump" ? 0.025 : 0.05
         if now - last < gap { return false }
         last = now
+        return true
+    }
+}
+
+// Restarts after a web content process crash: allowed while fewer than `limit` happened in the last `window` seconds,
+// so a page that keeps crashing ends on the error page instead of reloading forever.
+struct CrashLimiter {
+    var times: [TimeInterval] = []
+    let limit = 3
+    let window: TimeInterval = 30
+    mutating func allowRestart(now: TimeInterval) -> Bool {
+        times = times.filter { now - $0 < window }
+        if times.count >= limit { return false }
+        times.append(now)
         return true
     }
 }
@@ -49,6 +63,12 @@ func loadErrorMessage(domain: String, code: Int) -> String? {
     return "페이지를 열지 못했어요. (오류 \(domain) \(code))"
 }
 
+func htmlEscape(_ s: String) -> String {
+    s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "'", with: "&#39;")
+        .replacingOccurrences(of: "\"", with: "&quot;")
+}
+
 func errorPage(_ message: String) -> String {
     "<html><meta charset=utf-8><body style='font:16px -apple-system;text-align:center;padding:12vh 2em;color:#453327'>"
     + "<h2>고양이를 불러오지 못했어요</h2><p>\(message)</p>"
@@ -64,12 +84,17 @@ if CommandLine.arguments.contains("--selftest") {
     check(!navigationAllowed(URL(string: "https://\(allowedHost).evil.example/")), "lookalike host blocked")
     check(!navigationAllowed(URL(string: "file:///etc/passwd")), "file blocked")
     check(!navigationAllowed(nil), "nil blocked")
+    check(htmlEscape("<a href='x'>&\"") == "&lt;a href=&#39;x&#39;&gt;&amp;&quot;", "html escape")
     check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorCancelled) == nil, "cancelled load ignored")
     check(loadErrorMessage(domain: "WebKitErrorDomain", code: 102) == nil, "frame load interrupted ignored")
     check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)?.contains("인터넷") == true, "offline message")
     check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorServerCertificateUntrusted)?.contains("보안") == true, "tls message")
     check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorBadServerResponse)?.contains("인터넷") == false, "other error is not labelled as network")
     check(loadErrorMessage(domain: "SomeOtherDomain", code: -999) != nil, "-999 in another domain is not ignored")
+    var c = CrashLimiter()
+    check(c.allowRestart(now: 0) && c.allowRestart(now: 1) && c.allowRestart(now: 2), "three restarts allowed")
+    check(!c.allowRestart(now: 3), "fourth restart within 30s refused")
+    check(c.allowRestart(now: 40), "restart allowed again after 30s")
     var g = HapticGate()
     check(g.allow(kind: "tick", now: 10.000), "first tick")
     check(!g.allow(kind: "tick", now: 10.030), "tick within 50ms")
@@ -82,6 +107,7 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
     var window: NSWindow!
     var gate = HapticGate()
     var web: WKWebView!
+    var crashes = CrashLimiter()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let config = WKWebViewConfiguration()
@@ -99,20 +125,31 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
         window.contentView = web
         window.center()
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(web)   // so Copy / Select All reach the page without a click first
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
-    // Only the app's own host may navigate inside this window; everything else opens in the default browser.
+    // Only the app's own host may load in the main frame; links elsewhere open in the default browser.
+    // Subframes (embeds, captchas) may load https content: they cannot reach the haptic handler, which only
+    // accepts the main frame.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { decisionHandler(.cancel); return }
         if navigationAllowed(url) { decisionHandler(.allow); return }
-        if navigationAction.navigationType == .linkActivated, url.scheme == "https" || url.scheme == "http" {
-            NSWorkspace.shared.open(url)
-        }
+        let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? true
+        if !isMainFrame, url.scheme == "https" || url.scheme == "about" { decisionHandler(.allow); return }
         decisionHandler(.cancel)
+        let external = url.scheme == "https" || url.scheme == "http" || url.scheme == "mailto"
+        if navigationAction.navigationType == .linkActivated {
+            if external { NSWorkspace.shared.open(url) }
+        } else if isMainFrame, external {
+            // A redirect or script navigation away from the app's host (e.g. a domain move or an access
+            // challenge). Without this the window would stay blank, because the cancel is not reported as an error.
+            webView.loadHTMLString(errorPage("이 페이지는 앱 안에서 열 수 없어요. (\(htmlEscape(url.host ?? url.scheme ?? "")))"),
+                                   baseURL: nil)
+        }
     }
 
     // Load failures: show a message with a retry link instead of an empty window.
@@ -127,7 +164,15 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         showError(webView, error)
     }
-    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { webView.reload() }
+    // The page's web process crashed. `reload()` does nothing if nothing had committed yet, so load the start URL;
+    // after repeated crashes show the error page instead of looping.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        if crashes.allowRestart(now: ProcessInfo.processInfo.systemUptime) {
+            webView.load(URLRequest(url: startURL))
+        } else {
+            webView.loadHTMLString(errorPage("페이지가 계속 멈춰요. 잠시 뒤 다시 시도해 주세요."), baseURL: nil)
+        }
+    }
 
     @objc func reload() { web.load(URLRequest(url: startURL)) }
 
@@ -140,7 +185,7 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
         return nil
     }
 
-    // Accept haptic requests only from the main frame of the app's own origin, at most ~16 per second.
+    // Accept haptic requests only from the main frame of the app's own origin, rate limited by `gate`.
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "haptic",
               message.frameInfo.isMainFrame,
