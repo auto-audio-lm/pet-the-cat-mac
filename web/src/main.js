@@ -2,7 +2,12 @@ import { press, setPath, load } from 'button-sounds';
 import { W, H, hit as hitMask, zoneAt as zoneAtMask, keyAction, keyUpAction, makeHapticGate, fadeAlpha } from './logic.js';
 
 setPath('/sounds/');
-['uhk-soft', 'low-thumps', 'synth-on', 'synth-off', 'tonal-on', 'hi75-soft'].forEach(load);
+const SOUNDS = ['uhk-soft', 'low-thumps', 'synth-on', 'synth-off', 'tonal-on', 'hi75-soft'];
+SOUNDS.forEach(load);
+// button-sounds swallows load errors, so probe the files ourselves and tell the user when sound is missing.
+Promise.all(SOUNDS.map((n) => fetch(`/sounds/${n}.mp3`, { method: 'HEAD' }).then((r) => r.ok)))
+  .then((r) => { if (r.some((v) => !v)) setNotice('sound', '일부 소리 파일을 못 불러와서 소리가 나지 않을 수 있어요.'); })
+  .catch(() => setNotice('sound', '소리 파일을 확인하지 못했어요. 소리가 나지 않을 수 있어요.'));
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('c'), ctx = canvas.getContext('2d');
@@ -16,8 +21,8 @@ const COATS = [
 /* ---------- assets ---------- */
 const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('load failed: ' + src)); i.src = src; });
 const pixels = (img) => { const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(img, 0, 0, W, H); return g.getImageData(0, 0, W, H).data; };
-let notice = '';
-const setNotice = (m) => { notice = m; updateStatus(); };
+const notices = {};
+const setNotice = (key, m) => { if (m) notices[key] = m; else delete notices[key]; updateStatus(); };
 const coatCache = {}; // id -> Promise<{img, px}>; a failed promise is dropped so the next call retries
 function getCoat(id) {
   if (!coatCache[id]) {
@@ -28,8 +33,8 @@ function getCoat(id) {
 let mask = null, handImg = null, maskLoading = null;
 function ensureMask() {
   if (mask) return Promise.resolve(mask);
-  return (maskLoading ||= loadImg('/cats/mask.png').then((img) => { mask = pixels(img); setNotice(''); return mask; })
-    .catch(() => { maskLoading = null; setNotice('고양이 영역 이미지를 못 불러왔어요. 다시 시도 중이에요.'); setTimeout(ensureMask, 3000); return null; }));
+  return (maskLoading ||= loadImg('/cats/mask.png').then((img) => { mask = pixels(img); setNotice('mask'); return mask; })
+    .catch(() => { maskLoading = null; setNotice('mask', '고양이 영역 이미지를 못 불러왔어요. 다시 시도 중이에요.'); setTimeout(ensureMask, 3000); return null; }));
 }
 ensureMask();
 const loadHand = () => loadImg('/cats/hand.webp').then((i) => (handImg = i)).catch(() => setTimeout(loadHand, 5000));
@@ -50,9 +55,9 @@ async function setCoat(i) {
   try {
     const c = await getCoat(COATS[i].id);
     if (wantCoat !== i) return; // a newer choice superseded this one
-    state.coat = i; state.cur = c; sync(); setNotice('');
+    state.coat = i; state.cur = c; sync(); setNotice('coat');
   } catch {
-    if (wantCoat === i) { wantCoat = state.coat; setNotice(`${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`); }
+    if (wantCoat === i) { wantCoat = state.coat; setNotice('coat', `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`); }
   }
 }
 setCoat(0);
@@ -217,7 +222,7 @@ function updateStatus() {
     ? '햅틱: Mac 앱 연결됨 (신호 전송 중, 실제 트랙패드 진동은 미검증)'
     : '햅틱 없음: 이 화면은 소리와 애니메이션만 나옵니다. 트랙패드 햅틱은 별도 Mac 앱 안에서만 시도됩니다.'];
   if (pressureSeen) bits.push('압력 입력 감지됨(Safari Force Touch)');
-  if (notice) bits.push(notice);
+  bits.push(...Object.values(notices));
   $('status').textContent = bits.join(' · ');
 }
 updateStatus();

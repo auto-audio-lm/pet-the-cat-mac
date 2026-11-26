@@ -30,6 +30,25 @@ struct HapticGate {
     }
 }
 
+// Message for a load error, or nil when the error is not a real failure (cancelled loads, e.g. we cancelled
+// a navigation ourselves, or WebKit's "frame load interrupted" after a policy cancel).
+func loadErrorMessage(domain: String, code: Int) -> String? {
+    if domain == NSURLErrorDomain {
+        switch code {
+        case NSURLErrorCancelled: return nil
+        case NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost, NSURLErrorCannotFindHost,
+             NSURLErrorCannotConnectToHost, NSURLErrorTimedOut, NSURLErrorDNSLookupFailed:
+            return "인터넷 연결을 확인해 주세요."
+        case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateUntrusted, NSURLErrorServerCertificateHasBadDate,
+             NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid:
+            return "보안 연결에 실패했어요. 잠시 뒤 다시 시도해 주세요."
+        default: return "페이지를 열지 못했어요. (오류 \(domain) \(code))"
+        }
+    }
+    if domain == "WebKitErrorDomain" && code == 102 { return nil }
+    return "페이지를 열지 못했어요. (오류 \(domain) \(code))"
+}
+
 func errorPage(_ message: String) -> String {
     "<html><meta charset=utf-8><body style='font:16px -apple-system;text-align:center;padding:12vh 2em;color:#453327'>"
     + "<h2>고양이를 불러오지 못했어요</h2><p>\(message)</p>"
@@ -45,6 +64,12 @@ if CommandLine.arguments.contains("--selftest") {
     check(!navigationAllowed(URL(string: "https://\(allowedHost).evil.example/")), "lookalike host blocked")
     check(!navigationAllowed(URL(string: "file:///etc/passwd")), "file blocked")
     check(!navigationAllowed(nil), "nil blocked")
+    check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorCancelled) == nil, "cancelled load ignored")
+    check(loadErrorMessage(domain: "WebKitErrorDomain", code: 102) == nil, "frame load interrupted ignored")
+    check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)?.contains("인터넷") == true, "offline message")
+    check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorServerCertificateUntrusted)?.contains("보안") == true, "tls message")
+    check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorBadServerResponse)?.contains("인터넷") == false, "other error is not labelled as network")
+    check(loadErrorMessage(domain: "SomeOtherDomain", code: -999) != nil, "-999 in another domain is not ignored")
     var g = HapticGate()
     check(g.allow(kind: "tick", now: 10.000), "first tick")
     check(!g.allow(kind: "tick", now: 10.030), "tick within 50ms")
@@ -91,11 +116,16 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
     }
 
     // Load failures: show a message with a retry link instead of an empty window.
+    private func showError(_ webView: WKWebView, _ error: Error) {
+        let e = error as NSError
+        guard let message = loadErrorMessage(domain: e.domain, code: e.code) else { return }
+        webView.loadHTMLString(errorPage(message), baseURL: nil)
+    }
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        webView.loadHTMLString(errorPage("인터넷 연결을 확인해 주세요."), baseURL: nil)
+        showError(webView, error)
     }
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        webView.loadHTMLString(errorPage("인터넷 연결을 확인해 주세요."), baseURL: nil)
+        showError(webView, error)
     }
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { webView.reload() }
 

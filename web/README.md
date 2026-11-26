@@ -2,6 +2,18 @@
 
 Vite + vanilla JS. Deployed at https://cat-pet-haptic.pages.dev/ (Cloudflare Pages).
 
-- `npm ci && npm test && npx vite build`
-- The cat images, mask and sound files live in `public/` and are **not** in this repo (AI-generated images deployed separately; sounds come from the `button-sounds` package, MIT). The build works without them, but the page shows an asset error notice.
-- No haptics from the web page itself. It only posts `{kind: "tick" | "bump"}` to `window.webkit.messageHandlers.haptic`, which exists only inside the Mac app.
+## Build and test
+```
+npm ci
+npm run build      # prebuild copies the 6 sounds from the MIT `button-sounds` package into public/sounds
+                   # and fails if any required file in public/ is missing or empty
+npm test           # unit tests (node:test)
+npm run test:e2e   # builds, serves locally (vite preview) and drives headless Chrome (needs Chrome, or CHROME_PATH)
+```
+
+## Assets
+- `public/cats/`: AI-generated cat images, mask and hand (committed).
+- `public/sounds/`: not committed; copied from `button-sounds` (MIT) by `npm run assets`.
+
+## Haptics
+No haptics from the web page itself. It only posts `{kind: "tick" | "bump"}` to `window.webkit.messageHandlers.haptic`, which exists only inside the Mac app. The e2e test checks the page against a stub of that bridge; it says nothing about real trackpad output.
