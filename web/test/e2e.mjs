@@ -148,6 +148,17 @@ try {
   ok('native texture: keyboard petting still sends pulses', (await haptics(p)).length > 0);
   await p.close();
 
+  // Idle: no input for a while -> no redraws; any movement -> drawing resumes.
+  p = await open();
+  const drawsNow = () => p.evaluate(() => window.__petState().draws);
+  await sleep(3600); const d1 = await drawsNow(); await sleep(1000); const d2 = await drawsNow();
+  ok('idle page stops redrawing', d2 === d1, `${d1} -> ${d2} in 1 s`);
+  await p.mouse.move(600, 400); await p.mouse.move(640, 410, { steps: 5 }); await sleep(300);
+  ok('pointer movement resumes drawing', (await drawsNow()) > d2, `${d2} -> ${await drawsNow()}`);
+  await p.click('#moon'); const d3 = await drawsNow(); await sleep(300);
+  ok('theme change redraws', (await drawsNow()) > d3);
+  await p.close();
+
   // Static hosts answer a missing file with 200 + index.html; that must count as missing too.
   p = await open({ block: (u) => u.includes('/sounds/low-thumps.mp3') && { status: 200, contentType: 'text/html', body: '<!doctype html><html></html>' } });
   ok('sound replaced by an HTML fallback shows notice', (await status(p)).includes('소리 파일'), await status(p));

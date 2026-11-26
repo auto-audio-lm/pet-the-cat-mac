@@ -48,9 +48,16 @@ function fadeSleeve(img) {
   g.globalCompositeOperation = 'destination-in'; g.fillStyle = grad; g.fillRect(0, 0, c.width, c.height);
   return c;
 }
-const loadHand = () => loadImg('/cats/hand.webp').then((i) => (handImg = fadeSleeve(i))).catch(() => setTimeout(loadHand, 5000));
+const loadHand = () => loadImg('/cats/hand.webp').then((i) => { handImg = fadeSleeve(i); wake(); }).catch(() => setTimeout(loadHand, 5000));
 loadHand();
 const hit = (x, y) => hitMask(mask, x, y);
+
+/* ---------- idle rendering ---------- */
+// The canvas is redrawn only while something changes: input, a coat or theme change, or ruffled fur still fading
+// (gone after ~2 s). An idle window, even with the pointer resting on it, then costs no drawing.
+const IDLE_AFTER = 3000;
+let lastActive = performance.now(), draws = 0;
+const wake = () => { lastActive = performance.now(); };
 
 /* ---------- state ---------- */
 const state = {
@@ -66,7 +73,7 @@ async function setCoat(i) {
   try {
     const c = await getCoat(COATS[i].id);
     if (wantCoat !== i) return; // a newer choice superseded this one
-    state.coat = i; state.cur = c; sync(); setNotice('coat');
+    state.coat = i; state.cur = c; sync(); setNotice('coat'); wake();
   } catch {
     if (wantCoat === i) { wantCoat = state.coat; setNotice('coat', `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`); }
   }
@@ -151,6 +158,7 @@ function sprinkle(x, y, a) {
 }
 
 function petMove(x, y, dt, pressure, fromPointer = false) {
+  wake();
   const dx = x - state.lastX, dy = y - state.lastY, dist = Math.hypot(dx, dy);
   const v = dist / Math.max(dt, 1) * 1000;
   const frames = Math.max(dt, 1) / (1000 / 60); // per-60Hz-frame rates below, so 120 Hz input feels the same
@@ -182,9 +190,9 @@ canvas.addEventListener('pointermove', (e) => {
   state.inside = true; state.px = x; state.py = y;
   petMove(x, y, now - state.lastT, e.pointerType === 'mouse' ? state.pressure : (e.pressure || 0), true); state.lastT = now;
 });
-canvas.addEventListener('pointerleave', () => { state.inside = false; state.speed = 0; stopNoise(); reportZone('none'); });
+canvas.addEventListener('pointerleave', () => { wake(); state.inside = false; state.speed = 0; stopNoise(); reportZone('none'); });
 canvas.addEventListener('pointerdown', (e) => {
-  arm(); state.down = true; canvas.setPointerCapture?.(e.pointerId);
+  wake(); arm(); state.down = true; canvas.setPointerCapture?.(e.pointerId);
   const [x, y] = toCanvas(e); state.px = x; state.py = y; state.inside = true; state.lastX = x; state.lastY = y; state.lastT = performance.now();
   if (hit(x, y)) { tick(0.5, zoneAt(x, y), true); pat(); }
 });
@@ -198,11 +206,11 @@ function stopNoise() { if (actx && noiseGain) noiseGain.gain.setTargetAtTime(0, 
 // Clear every held-input state (focus loss, tab hidden, pointer lost).
 function resetInput() {
   state.down = false; state.pressure = 0; state.kbd = null;
-  state.inside = false; state.speed = 0; state.accum = 0; stopNoise(); reportZone('none');
+  state.inside = false; state.speed = 0; state.accum = 0; stopNoise(); reportZone('none'); wake();
 }
 window.addEventListener('blur', resetInput);
 // Read-only view for the browser test, so it can check held-input state directly.
-window.__petState = () => ({ kbd: state.kbd, inside: state.inside, samples: samplesPlayed });
+window.__petState = () => ({ kbd: state.kbd, inside: state.inside, samples: samplesPlayed, draws });
 document.addEventListener('visibilitychange', () => { if (document.hidden) resetInput(); });
 canvas.addEventListener('lostpointercapture', release);
 
@@ -215,7 +223,7 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => {
   const a = keyUpAction(e);
-  if (a && a === state.kbd) { state.kbd = null; state.inside = false; state.speed = 0; state.accum = 0; stopNoise(); }
+  if (a && a === state.kbd) { wake(); state.kbd = null; state.inside = false; state.speed = 0; state.accum = 0; stopNoise(); }
 });
 let phase = 0;
 function kbdStep(dt) {
@@ -245,7 +253,7 @@ function toggleSound() {
 }
 $('sound').onclick = toggleSound;
 function setDark(v) {
-  state.dark = v; $('moon').setAttribute('aria-checked', v); $('moon').textContent = v ? '☀' : '☾';
+  wake(); state.dark = v; $('moon').setAttribute('aria-checked', v); $('moon').textContent = v ? '☀' : '☾';
   document.documentElement.dataset.theme = v ? 'dark' : 'light';
   document.querySelector('meta[name=theme-color]').content = v ? '#101722' : '#fbf5ec';
 }
@@ -255,7 +263,7 @@ function updateStatus() {
   const bits = [!bridge()
     ? '햅틱 없음: 이 화면은 소리와 애니메이션만 나옵니다. 트랙패드 햅틱은 별도 Mac 앱 안에서만 시도됩니다.'
     : nativeTexture()
-      ? '햅틱: Mac 앱이 털 질감을 냅니다 (강도는 메뉴 막대의 Haptics에서 고르세요)'
+      ? '햅틱: Mac 앱이 털 질감을 냅니다 (강도와 끄기는 메뉴 막대의 Haptics에서)'
       : '햅틱: Mac 앱 연결됨'];
   if (pressureSeen) bits.push('압력 입력 감지됨(Safari Force Touch)');
   bits.push(...Object.values(notices));
@@ -274,7 +282,8 @@ function frame(now) {
   if (actx && noiseGain) {
     if (!petting) noiseGain.gain.setTargetAtTime(0, actx.currentTime, 0.08);
   }
-  // draw
+  if (!state.kbd && now - lastActive > IDLE_AFTER) { requestAnimationFrame(frame); return; }
+  draws++;
   if (state.cur) ctx.drawImage(state.cur.img, 0, 0, W, H); else { ctx.fillStyle = '#d9c3a0'; ctx.fillRect(0, 0, W, H); }
   ctx.drawImage(ruffle, 0, 0);
   rg.globalCompositeOperation = 'destination-out'; rg.fillStyle = `rgba(0,0,0,${fadeAlpha(dt)})`; rg.fillRect(0, 0, W, H); rg.globalCompositeOperation = 'source-over';
