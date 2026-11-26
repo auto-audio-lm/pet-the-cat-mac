@@ -142,6 +142,7 @@ try {
   ok('native texture: zone reported, no per-step pointer pulses', zones.includes('body') && (await haptics(p)).length === 0,
     `zones ${zones.join(',')}, pulses ${(await haptics(p)).length}`);
   await p.mouse.move(5, 5, { steps: 5 });
+  ok('native texture: status points to the Haptics menu', (await status(p)).includes('Haptics'), await status(p));
   ok('native texture: leaving the cat reports none', (await p.evaluate(() => window.__zones.at(-1))) === 'none');
   await p.keyboard.down('Space'); await sleep(600); await p.keyboard.up('Space');
   ok('native texture: keyboard petting still sends pulses', (await haptics(p)).length > 0);

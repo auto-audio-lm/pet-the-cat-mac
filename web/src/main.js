@@ -252,9 +252,11 @@ function setDark(v) {
 $('moon').onclick = () => { arm(); setDark(!state.dark); if (state.sound) playSample('synth-on', { volume: 0.2 }); };
 $('full').onclick = () => { arm(); if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.(); };
 function updateStatus() {
-  const bits = [bridge()
-    ? '햅틱: Mac 앱 연결됨 (신호 전송 중, 실제 트랙패드 진동은 미검증)'
-    : '햅틱 없음: 이 화면은 소리와 애니메이션만 나옵니다. 트랙패드 햅틱은 별도 Mac 앱 안에서만 시도됩니다.'];
+  const bits = [!bridge()
+    ? '햅틱 없음: 이 화면은 소리와 애니메이션만 나옵니다. 트랙패드 햅틱은 별도 Mac 앱 안에서만 시도됩니다.'
+    : nativeTexture()
+      ? '햅틱: Mac 앱이 털 질감을 냅니다 (강도는 메뉴 막대의 Haptics에서 고르세요)'
+      : '햅틱: Mac 앱 연결됨'];
   if (pressureSeen) bits.push('압력 입력 감지됨(Safari Force Touch)');
   bits.push(...Object.values(notices));
   $('status').textContent = bits.join(' · ');
