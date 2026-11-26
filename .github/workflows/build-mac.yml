@@ -168,6 +168,18 @@ jobs:
         with:
           name: PetTheCat-mac
       - run: sha256sum -c PetTheCat-mac.zip.sha256
+      # The tag must match the app's version, so a release is never published with a stale Info.plist.
+      - name: Check tag matches CFBundleShortVersionString
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          unzip -p PetTheCat-mac.zip "Pet the Cat.app/Contents/Info.plist" > Info.plist
+          version="$(python3 -I -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleShortVersionString"])' Info.plist)"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG does not match the app version $version (Info.plist CFBundleShortVersionString)."
+            exit 1
+          fi
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: |

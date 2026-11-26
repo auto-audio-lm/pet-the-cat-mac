@@ -125,7 +125,7 @@ struct GrainGenerator {
     private var travelled = 0.0
     private var next: Double
     private var lastEvent: Double?
-    private var speed = 0.0
+    private(set) var speed = 0.0       // smoothed pointer speed, pt/s
     private var lastPulse = -1000.0
     init(spacing: Double) { self.spacing = spacing; next = spacing }
     /// `random` in -1...1 jitters the spacing of the following grain.
@@ -142,6 +142,16 @@ struct GrainGenerator {
         return true
     }
     mutating func reset() { travelled = 0; lastEvent = nil; speed = 0 }
+}
+
+/// Pulse strength for one grain: the style's base pulse, one step firmer for a fast stroke (> 900 pt/s) and one
+/// more while the trackpad is pressed down. Steps follow measured amplitude: 1 (19) < 5 (23) < 2 (35) < 6 (48).
+func grainStrength(base: Int32, speed: Double, pressure: Double) -> Int32 {
+    let ladder: [Int32] = [1, 5, 2, 6]
+    var i = ladder.firstIndex(of: base) ?? 0
+    if speed > 900 { i += 1 }
+    if pressure > 0.5 { i += 1 }
+    return ladder[min(i, ladder.count - 1)]
 }
 
 /// The trackpad's actuator through MultitouchSupport. All calls run on one serial queue; at most two pulses wait.
@@ -259,8 +269,10 @@ final class FurTexture {
         let d = Double(hypot(e.deltaX, e.deltaY))
         guard grains.move(distance: d, at: e.timestamp, random: Double.random(in: -1...1)) else { return }
         count += 1
-        let id: Int32 = zone == .tail ? style.tailID : (count % 5 == 0 ? style.clumpID : style.grainID)
-        play(id, fallback: .generic, now: e.timestamp)
+        let base: Int32 = zone == .tail ? style.tailID : (count % 5 == 0 ? style.clumpID : style.grainID)
+        // Pressing while stroking (a drag) makes the fur feel denser; a force click counts as fully pressed.
+        let pressure = e.type == .leftMouseDragged ? (e.stage >= 2 ? 1 : Double(e.pressure)) : 0
+        play(grainStrength(base: base, speed: grains.speed, pressure: pressure), fallback: .generic, now: e.timestamp)
     }
 
     /// One pulse requested by the page ("tick" / "bump"), rate limited like before.
@@ -369,6 +381,11 @@ if CommandLine.arguments.contains("--selftest") {
         check(pv.contains { $0.id == HapticStyle.normal.clumpID } && pv.contains { $0.id == HapticStyle.normal.grainID },
               "preview mixes grains and clumps")
         check(FurTexture.previewSchedule(style: .soft, speed: 300, duration: 1.2).count < pv.count, "soft is sparser than normal")
+        check(grainStrength(base: 1, speed: 300, pressure: 0) == 1, "slow light stroke keeps the base pulse")
+        check(grainStrength(base: 1, speed: 1200, pressure: 0) == 5, "fast stroke is one step firmer")
+        check(grainStrength(base: 1, speed: 1200, pressure: 0.8) == 2, "fast pressed stroke is two steps firmer")
+        check(grainStrength(base: 6, speed: 1200, pressure: 1) == 6, "strength is capped at the firmest pulse")
+        check(grainStrength(base: 3, speed: 0, pressure: 0) == 1, "unknown base starts from the weakest")
         var first = GrainGenerator(spacing: 8)
         check(first.move(distance: 10, at: 1, random: 0), "a fast first move after a reset is not swallowed")
         check(TrackpadActuator().available || true, "actuator lookup does not crash")

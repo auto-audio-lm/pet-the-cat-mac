@@ -22,6 +22,10 @@ cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP/Contents/Info.plist"
 
 "$APP/Contents/MacOS/PetTheCat" --selftest
+# Also run the Intel slice when this Mac can (Apple silicon with Rosetta, or an Intel Mac).
+if arch -x86_64 /usr/bin/true 2>/dev/null; then
+  arch -x86_64 "$APP/Contents/MacOS/PetTheCat" --selftest > /dev/null && echo "selftest ok (x86_64)"
+fi
 
 if [ "$IDENTITY" = "-" ]; then
   codesign --force --sign - "$APP"
