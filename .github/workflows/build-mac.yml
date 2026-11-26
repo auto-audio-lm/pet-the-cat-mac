@@ -10,30 +10,117 @@ permissions:
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 60   # notarization alone may take up to 30 minutes
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Build universal app (ad-hoc signed, not notarized)
+
+      # Signing is all-or-nothing. With all five secrets the app is signed with a Developer ID certificate and
+      # notarized, so Gatekeeper opens it without a warning. With none it is ad-hoc signed and Gatekeeper blocks a
+      # downloaded copy. Pull requests are always ad-hoc signed: fork PRs get no secrets, and notarizing every PR
+      # push would be slow.
+      - name: Check signing secrets
+        id: signing
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          set -euxo pipefail
-          swift --version
-          mkdir -p build
-          swiftc -O -target arm64-apple-macos12.3 PetTheCat.swift -o build/PetTheCat-arm64
-          swiftc -O -target x86_64-apple-macos12.3 PetTheCat.swift -o build/PetTheCat-x86_64
-          # logic self test on the runner's native architecture (no window, no network)
-          if [ "$(uname -m)" = "arm64" ]; then build/PetTheCat-arm64 --selftest; else build/PetTheCat-x86_64 --selftest; fi
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Signing: ad-hoc (pull request build)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          all="MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD APPLE_ID APPLE_APP_PASSWORD APPLE_TEAM_ID"
+          missing=""
+          for name in $all; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -z "$missing" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Signing: Developer ID + notarization" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$missing" = " $all" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing secrets are set. The app is ad-hoc signed and Gatekeeper will block it after download."
+            echo "Signing: ad-hoc only (not notarized, Gatekeeper blocks the download)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Signing secrets are only partly set. Missing:$missing"
+            exit 1
+          fi
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          trap 'rm -f "$RUNNER_TEMP/cert.p12"' EXIT
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -f pkcs12 -k "$KEYCHAIN" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$IDENTITY" ]; then
+            # Without -v this also lists identities whose chain does not validate, with the reason
+            # (e.g. CSSMERR_TP_NOT_TRUSTED when the Developer ID intermediate certificate is missing).
+            security find-identity -p codesigning "$KEYCHAIN" || true
+            echo "::error::No valid 'Developer ID Application' identity. Check that the .p12 holds the certificate with its private key, and see the list above for a chain error such as CSSMERR_TP_NOT_TRUSTED."
+            exit 1
+          fi
+          echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Build universal app
+        run: ./build.sh
+
+      - name: Notarize and staple
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
           APP="build/Pet the Cat.app"
-          mkdir -p "$APP/Contents/MacOS"
-          lipo -create build/PetTheCat-arm64 build/PetTheCat-x86_64 -output "$APP/Contents/MacOS/PetTheCat"
-          cp Info.plist "$APP/Contents/Info.plist"
-          plutil -lint "$APP/Contents/Info.plist"
-          codesign --force --sign - "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          lipo -info "$APP/Contents/MacOS/PetTheCat"
-          ditto -c -k --keepParent "$APP" PetTheCat-mac.zip
+          creds=(--apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID")
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+          # Read the result as JSON whatever notarytool's exit code is, so a rejection still prints Apple's log.
+          RESULT="$RUNNER_TEMP/notary.json"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" "${creds[@]}" --wait --timeout 30m \
+            --output-format json > "$RESULT" || true
+          cat "$RESULT"
+          status="$(plutil -extract status raw -o - "$RESULT" 2>/dev/null || true)"
+          if [ "$status" != "Accepted" ]; then
+            id="$(plutil -extract id raw -o - "$RESULT" 2>/dev/null || true)"
+            [ -z "$id" ] || xcrun notarytool log "$id" "${creds[@]}" || true
+            echo "::error::Notarization was not accepted (status: ${status:-unknown})."
+            exit 1
+          fi
+          # Staple the ticket into the app so the first launch also works offline.
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=2 "$APP" || echo "::warning::spctl did not accept the notarized app on this runner."
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent "build/Pet the Cat.app" PetTheCat-mac.zip
           shasum -a 256 PetTheCat-mac.zip | tee PetTheCat-mac.zip.sha256
+
+      - name: Remove signing keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PetTheCat-mac

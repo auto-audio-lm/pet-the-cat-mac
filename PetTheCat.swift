@@ -1,7 +1,9 @@
 // Pet the Cat - small macOS wrapper that lets the web app request trackpad haptics.
 // STATUS: compiles on a GitHub macOS runner (CI). Never launched on a real Mac by the author; trackpad haptics are UNVERIFIED.
-// Requires: macOS 12.3+ (WKPreferences.isElementFullscreenEnabled), internet access. Ad-hoc signed, not notarized.
-// Build:   swiftc -O PetTheCat.swift -o PetTheCat && ./PetTheCat      (needs Xcode Command Line Tools)
+// Requires: macOS 12.3+ (WKPreferences.isElementFullscreenEnabled), internet access. Release builds are notarized only when CI has
+//           the signing secrets (see README); otherwise ad-hoc signed.
+// Build:   ./build.sh  (universal app bundle in build/), or
+//          swiftc -O PetTheCat.swift -o PetTheCat && ./PetTheCat      (needs Xcode Command Line Tools)
 // Self test (no window, no network): ./PetTheCat --selftest
 // The page posts {kind: "tick" | "bump"} to window.webkit.messageHandlers.haptic.
 // macOS only plays trackpad haptics while a finger is on the trackpad (Apple docs for perform(_:performanceTime:)).
