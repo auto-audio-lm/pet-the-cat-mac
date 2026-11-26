@@ -37,7 +37,17 @@ function ensureMask() {
     .catch(() => { maskLoading = null; setNotice('mask', '고양이 영역 이미지를 못 불러왔어요. 다시 시도 중이에요.'); setTimeout(ensureMask, 3000); return null; }));
 }
 ensureMask();
-const loadHand = () => loadImg('/cats/hand.webp').then((i) => (handImg = i)).catch(() => setTimeout(loadHand, 5000));
+// The sleeve in hand.webp ends in a straight image edge. Fade it out along the arm direction so no rectangle shows.
+function fadeSleeve(img) {
+  const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+  const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+  const k = c.width / 729; // gradient tuned on the 729x794 source
+  const grad = g.createLinearGradient(481 * k, 481 * k, 601 * k, 601 * k);
+  grad.addColorStop(0, '#fff'); grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.globalCompositeOperation = 'destination-in'; g.fillStyle = grad; g.fillRect(0, 0, c.width, c.height);
+  return c;
+}
+const loadHand = () => loadImg('/cats/hand.webp').then((i) => (handImg = fadeSleeve(i))).catch(() => setTimeout(loadHand, 5000));
 loadHand();
 const hit = (x, y) => hitMask(mask, x, y);
 
