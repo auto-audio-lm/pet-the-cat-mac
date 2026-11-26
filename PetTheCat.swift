@@ -272,6 +272,46 @@ final class FurTexture {
         else { play(style.grainID, fallback: .alignment, now: now) }
     }
 
+    /// Pulse times (s from start) and IDs for a steady stroke over the body: what the texture plays for a hand
+    /// moving at `speed` pt/s, so it can be felt without moving. Pure, for --selftest.
+    static func previewSchedule(style: HapticStyle, speed: Double, duration: Double, seed: UInt64 = 1) -> [(t: Double, id: Int32)] {
+        var gen = GrainGenerator(spacing: style.spacing)
+        var rng = seed
+        var out: [(Double, Int32)] = []
+        let step = 0.008
+        var t = 0.0, n = 0
+        while t < duration {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407          // LCG: repeatable jitter
+            let r = Double(rng >> 11) / Double(1 << 53) * 2 - 1
+            if gen.move(distance: speed * step, at: t, random: r) {
+                n += 1
+                out.append((t, n % 5 == 0 ? style.clumpID : style.grainID))
+            }
+            t += step
+        }
+        return out
+    }
+
+    /// Plays the current texture as if stroking at a moderate speed for 1.2 s (finger on the trackpad).
+    func preview() {
+        guard style != .off else { return }
+        for p in FurTexture.previewSchedule(style: style, speed: 300, duration: 1.2) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + p.t) { [self] in
+                play(p.id, fallback: .generic, now: ProcessInfo.processInfo.systemUptime)
+            }
+        }
+    }
+
+    /// Plays actuation IDs 1...6 one after another, 0.6 s apart, to compare strengths.
+    func compareStrengths() {
+        for (i, id) in (1...6).enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 * Double(i)) { [self] in
+                if actuator.usable { actuator.pulse(Int32(id)) }
+                else { NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now) }
+            }
+        }
+    }
+
     private func play(_ id: Int32, fallback: NSHapticFeedbackManager.FeedbackPattern, now: Double) {
         if style != .system, actuator.usable { actuator.pulse(id); return }
         if style != .system { actuator.retryIfDue() }
@@ -322,6 +362,13 @@ if CommandLine.arguments.contains("--selftest") {
         for i in 1...400 { dist += 0.5; if jit.move(distance: 0.5, at: Double(i) * 0.005, random: sin(Double(i) * 0.37)) { at.append(dist) } }
         let spacings = Set(zip(at.dropFirst(), at).map { $0 - $1 })
         check(spacings.count > 1, "jitter varies the spacing")
+        let pv = FurTexture.previewSchedule(style: .normal, speed: 300, duration: 1.2)
+        let pvGaps = zip(pv.dropFirst(), pv).map { $0.t - $1.t }
+        check(pv.count >= 30 && pv.count <= 60 && pvGaps.allSatisfy { $0 >= 0.018 - 1e-9 },
+              "preview: 30-60 grains in 1.2 s at 300 pt/s, >= 18 ms apart (\(pv.count))")
+        check(pv.contains { $0.id == HapticStyle.normal.clumpID } && pv.contains { $0.id == HapticStyle.normal.grainID },
+              "preview mixes grains and clumps")
+        check(FurTexture.previewSchedule(style: .soft, speed: 300, duration: 1.2).count < pv.count, "soft is sparser than normal")
         var first = GrainGenerator(spacing: 8)
         check(first.move(distance: 10, at: 1, random: 0), "a fast first move after a reset is not swallowed")
         check(TrackpadActuator().available || true, "actuator lookup does not crash")
@@ -488,6 +535,8 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
         texture.style = style
         updateStyleMenu()
     }
+    @objc func previewTexture() { texture.preview() }
+    @objc func compareStrengths() { texture.compareStrengths() }
     func updateStyleMenu() { for item in styleItems { item.state = (item.representedObject as? String) == texture.style.rawValue ? .on : .off } }
 }
 
@@ -533,6 +582,13 @@ for style in HapticStyle.allCases {
     controller.styleItems.append(item)
     if style == .off || style == .firm { hapticsMenu.addItem(.separator()) }
 }
+hapticsMenu.addItem(.separator())
+let previewItem = NSMenuItem(title: "Preview Texture (finger on trackpad)", action: #selector(AppController.previewTexture), keyEquivalent: "")
+previewItem.target = controller
+hapticsMenu.addItem(previewItem)
+let compareItem = NSMenuItem(title: "Compare Strengths 1–6", action: #selector(AppController.compareStrengths), keyEquivalent: "")
+compareItem.target = controller
+hapticsMenu.addItem(compareItem)
 hapticsItem.submenu = hapticsMenu
 let winItem = NSMenuItem(); mainMenu.addItem(winItem)
 let winMenu = NSMenu(title: "Window")

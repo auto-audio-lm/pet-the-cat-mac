@@ -7,6 +7,8 @@ Small macOS app that opens https://cat-pet-haptic.pages.dev/ and makes the track
 - The page reports which part of the cat the pointer is over (`zone`); the app turns native pointer movement into a fur texture: one short, weak pulse per ~8 pt travelled, spacing jittered by ±35 %, at least 18 ms apart, nothing while the hand is nearly still (< 40 pt/s). The tail is a little firmer.
 - The weak pulses come from the trackpad actuator in Apple's private `MultitouchSupport` framework, loaded at runtime (the approach used by the open-source [HapticKey](https://github.com/niw/HapticKey) and [WhichSpace](https://github.com/gechr/WhichSpace)). Apple's public API (`NSHapticFeedbackManager`) has only three fixed-strength patterns. If the private framework is missing, the app falls back to the public API with coarser spacing.
 - **Haptics** menu: Off, Soft fur, Fur (default), Firm fur, and System clicks (classic) for the old public-API behaviour. The choice is remembered.
+  - *Preview Texture* plays the current texture for 1.2 s as if stroking at a moderate speed (keep a finger on the trackpad).
+  - *Compare Strengths 1–6* plays the actuator's six pulse strengths 0.6 s apart, to help choose or tune a style.
 - Keyboard petting (Space / T) and buttons still send single pulses from the page. A page from before the `zone` message also works: its ticks play as weak pulses.
 
 ## What is verified and what is not
