@@ -78,6 +78,25 @@ try {
   ok('tab hidden resets held key', (await p.evaluate(() => window.__petState().kbd)) === null && (await haptics(p)).length === n4,
     `${n3} -> ${n4} -> ${(await haptics(p)).length}`);
   await p.keyboard.up('Space');
+  await p.close();
+
+  // Sound on, a long stroke across the body: one soft pat on touch, no train of click samples (the old rattle).
+  p = await open();
+  const samples = () => p.evaluate(() => window.__petState().samples);
+  await p.mouse.move(420, 380); await p.mouse.down();
+  const s0 = await samples();
+  for (let i = 0; i < 4; i++) { await p.mouse.move(780, 420, { steps: 30 }); await p.mouse.move(420, 380, { steps: 30 }); }
+  await p.mouse.up();
+  const strokeHaptics = (await haptics(p)).length;
+  ok('long stroke plays at most the touch pat, no click train', (await samples()) - s0 <= 1 && strokeHaptics > 5,
+    `samples +${(await samples()) - s0}, haptics ${strokeHaptics}`);
+  ok('petting builds up the purr', (await p.evaluate(() => window.__petState().purr)) > 0.25);
+  await p.mouse.click(10, 10);
+  const t0 = await samples(); await p.keyboard.down('t'); await sleep(2000); await p.keyboard.up('t');
+  ok('tail strokes thump at most every 400 ms', (await samples()) - t0 <= 6, `+${(await samples()) - t0} in 2 s`);
+  await p.close();
+
+  p = await open();
   await p.click('#sound'); const before = await sound2(p); await p.keyboard.press('m');
   ok('M still toggles sound after clicking a button', (await sound2(p)) !== before);
   await p.close();

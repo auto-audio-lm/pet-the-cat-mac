@@ -1,5 +1,6 @@
 import { press, setPath, load } from 'button-sounds';
-import { W, H, hit as hitMask, zoneAt as zoneAtMask, keyAction, keyUpAction, makeHapticGate, fadeAlpha, isAudioResponse } from './logic.js';
+import { W, H, hit as hitMask, zoneAt as zoneAtMask, keyAction, keyUpAction, makeHapticGate, fadeAlpha, isAudioResponse,
+  brushLevel, purrLevel, THUMP_GAP } from './logic.js';
 
 setPath('/sounds/');
 const SOUNDS = ['uhk-soft', 'low-thumps', 'synth-on', 'synth-off', 'tonal-on', 'hi75-soft'];
@@ -74,26 +75,42 @@ setCoat(0);
 
 /* ---------- audio ---------- */
 let actx = null, noiseGain, noiseFilter, purrGain, purrLfo;
+// Looping noise buffer. Pink-ish (white noise through a one-pole lowpass) so the brushing sounds soft, not hissy.
+function noiseSource(seconds, smooth) {
+  const buf = actx.createBuffer(1, actx.sampleRate * seconds, actx.sampleRate), d = buf.getChannelData(0);
+  let y = 0;
+  for (let i = 0; i < d.length; i++) { y += (Math.random() * 2 - 1 - y) * smooth; d[i] = y; }
+  let peak = 0; for (let i = 0; i < d.length; i++) peak = Math.max(peak, Math.abs(d[i]));
+  for (let i = 0; i < d.length; i++) d[i] /= peak || 1;
+  const src = actx.createBufferSource(); src.buffer = buf; src.loop = true; return src;
+}
 function ensureAudio() {
   if (actx) { if (actx.state === 'suspended') actx.resume(); return; }
   const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
   actx = new AC();
-  const buf = actx.createBuffer(1, actx.sampleRate * 2, actx.sampleRate), d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  const src = actx.createBufferSource(); src.buffer = buf; src.loop = true;
-  noiseFilter = actx.createBiquadFilter(); noiseFilter.type = 'bandpass'; noiseFilter.frequency.value = 2600; noiseFilter.Q.value = 0.6;
+  // Brushing fur: soft band of noise; loudness and brightness follow stroke speed.
+  noiseFilter = actx.createBiquadFilter(); noiseFilter.type = 'bandpass'; noiseFilter.frequency.value = 1500; noiseFilter.Q.value = 0.5;
+  const brushLp = actx.createBiquadFilter(); brushLp.type = 'lowpass'; brushLp.frequency.value = 4500;
   noiseGain = actx.createGain(); noiseGain.gain.value = 0;
-  src.connect(noiseFilter).connect(noiseGain).connect(actx.destination); src.start();
-  const osc = actx.createOscillator(); osc.type = 'sawtooth'; osc.frequency.value = 48;
-  const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 220;
-  const pulse = actx.createGain(); pulse.gain.value = 0.5;
-  purrLfo = actx.createOscillator(); purrLfo.frequency.value = 25;
-  const amt = actx.createGain(); amt.gain.value = 0.5; purrLfo.connect(amt).connect(pulse.gain);
+  noiseSource(2, 0.35).connect(noiseFilter).connect(brushLp).connect(noiseGain).connect(actx.destination);
+  // Purr: low rumble (noise below ~150 Hz) pulsed smoothly ~26 times a second, with a slow breathing swell.
+  // A sine pulse instead of the old sawtooth: the sawtooth buzz sounded like a motor.
+  const rumble = noiseSource(3, 0.02);
+  const purrLp = actx.createBiquadFilter(); purrLp.type = 'lowpass'; purrLp.frequency.value = 150; purrLp.Q.value = 0.8;
+  const pulse = actx.createGain(); pulse.gain.value = 0.55;
+  purrLfo = actx.createOscillator(); purrLfo.frequency.value = 26;
+  const pulseAmt = actx.createGain(); pulseAmt.gain.value = 0.45; purrLfo.connect(pulseAmt).connect(pulse.gain);
+  const breath = actx.createGain(); breath.gain.value = 0.75;
+  const breathLfo = actx.createOscillator(); breathLfo.frequency.value = 0.55;
+  const breathAmt = actx.createGain(); breathAmt.gain.value = 0.25; breathLfo.connect(breathAmt).connect(breath.gain);
   purrGain = actx.createGain(); purrGain.gain.value = 0;
-  osc.connect(lp).connect(pulse).connect(purrGain).connect(actx.destination);
-  osc.start(); purrLfo.start();
+  rumble.connect(purrLp).connect(pulse).connect(breath).connect(purrGain).connect(actx.destination);
+  rumble.start(); purrLfo.start(); breathLfo.start();
   if (actx.state === 'suspended') actx.resume();
 }
+// Every sample playback goes through here, so the browser test can count them.
+let samplesPlayed = 0;
+function playSample(name, opts) { samplesPlayed++; press(name, opts); }
 
 /* ---------- haptics: only through the native Mac wrapper bridge ---------- */
 const bridge = () => window.webkit?.messageHandlers?.haptic;
@@ -104,12 +121,17 @@ function haptic(kind) {
   try { b.postMessage({ kind }); } catch { /* ignore */ }
 }
 
+// One stroke step. Haptics fire per step; sound does not (strokes are heard through the brushing noise), except a
+// soft thump on the tail at most every THUMP_GAP ms.
+let lastThump = -1e9;
 function tick(intensity, zone) {
   haptic(zone === 'tail' ? 'bump' : 'tick');
-  if (!state.sound || !state.armed) return;
-  const name = zone === 'tail' ? 'low-thumps' : (Math.random() < 0.25 ? 'hi75-soft' : 'uhk-soft');
-  press(name, { volume: Math.min(0.5, 0.06 + intensity * 0.3), playbackRate: (zone === 'tail' ? 1 : 0.8) + Math.random() * 0.25 });
+  if (zone !== 'tail' || !state.sound || !state.armed) return;
+  const now = performance.now(); if (now - lastThump < THUMP_GAP) return; lastThump = now;
+  playSample('low-thumps', { volume: Math.min(0.35, 0.08 + intensity * 0.2), playbackRate: 0.9 + Math.random() * 0.15 });
 }
+// First touch on the cat: one soft pat.
+function pat() { if (state.sound && state.armed) playSample('uhk-soft', { volume: 0.18, playbackRate: 0.8 + Math.random() * 0.1 }); }
 
 /* ---------- petting ---------- */
 const zoneAt = (x, y) => zoneAtMask(mask, x, y);
@@ -145,8 +167,8 @@ function petMove(x, y, dt, pressure) {
     state.purr = Math.min(1, state.purr + dist / 1400 + pressure * 0.01 * Math.min(frames, 4));
     if (dist > 1) sprinkle(x, y, Math.atan2(dy, dx));
     if (actx && noiseGain && state.sound) {
-      noiseGain.gain.setTargetAtTime(Math.min(0.05, state.speed / 40000) * (z === 'body' ? 1 : 0.4), actx.currentTime, 0.04);
-      noiseFilter.frequency.setTargetAtTime(1800 + state.speed * 2, actx.currentTime, 0.05);
+      noiseGain.gain.setTargetAtTime(brushLevel(state.speed, z), actx.currentTime, 0.06);
+      noiseFilter.frequency.setTargetAtTime(1100 + Math.min(state.speed, 1800) * 0.8, actx.currentTime, 0.08);
     }
   }
   state.lastX = x; state.lastY = y;
@@ -165,7 +187,7 @@ canvas.addEventListener('pointerleave', () => { state.inside = false; state.spee
 canvas.addEventListener('pointerdown', (e) => {
   arm(); state.down = true; canvas.setPointerCapture?.(e.pointerId);
   const [x, y] = toCanvas(e); state.px = x; state.py = y; state.inside = true; state.lastX = x; state.lastY = y; state.lastT = performance.now();
-  if (hit(x, y)) tick(0.5, zoneAt(x, y));
+  if (hit(x, y)) { tick(0.5, zoneAt(x, y)); pat(); }
 });
 const release = () => { state.down = false; state.pressure = 0; };
 canvas.addEventListener('pointerup', release); canvas.addEventListener('pointercancel', release);
@@ -181,7 +203,7 @@ function resetInput() {
 }
 window.addEventListener('blur', resetInput);
 // Read-only view for the browser test, so it can check held-input state directly.
-window.__petState = () => ({ kbd: state.kbd, inside: state.inside });
+window.__petState = () => ({ kbd: state.kbd, inside: state.inside, samples: samplesPlayed, purr: state.purr });
 document.addEventListener('visibilitychange', () => { if (document.hidden) resetInput(); });
 canvas.addEventListener('lostpointercapture', release);
 
@@ -212,7 +234,7 @@ const sw = $('swatches');
 COATS.forEach((c, i) => {
   const b = document.createElement('button'); b.className = 'sw'; b.setAttribute('aria-label', c.name); b.title = c.name;
   b.style.backgroundImage = `url(/cats/t_${c.id}.webp)`;
-  b.onclick = () => { arm(); setCoat(i); sync(); if (state.sound) press('tonal-on', { volume: 0.2 }); haptic('bump'); };
+  b.onclick = () => { arm(); setCoat(i); sync(); if (state.sound) playSample('tonal-on', { volume: 0.2 }); haptic('bump'); };
   sw.appendChild(b);
 });
 function sync() { [...sw.children].forEach((b, i) => b.setAttribute('aria-pressed', i === state.coat)); }
@@ -220,7 +242,7 @@ sync();
 function toggleSound() {
   state.sound = !state.sound; arm();
   $('sound').setAttribute('aria-checked', state.sound); $('sound').textContent = state.sound ? '🔊' : '🔇';
-  press(state.sound ? 'synth-on' : 'synth-off', { volume: 0.25 });
+  playSample(state.sound ? 'synth-on' : 'synth-off', { volume: 0.25 });
 }
 $('sound').onclick = toggleSound;
 function setDark(v) {
@@ -228,7 +250,7 @@ function setDark(v) {
   document.documentElement.dataset.theme = v ? 'dark' : 'light';
   document.querySelector('meta[name=theme-color]').content = v ? '#101722' : '#fbf5ec';
 }
-$('moon').onclick = () => { arm(); setDark(!state.dark); if (state.sound) press('synth-on', { volume: 0.2 }); };
+$('moon').onclick = () => { arm(); setDark(!state.dark); if (state.sound) playSample('synth-on', { volume: 0.2 }); };
 $('full').onclick = () => { arm(); if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.(); };
 function updateStatus() {
   const bits = [bridge()
@@ -250,8 +272,8 @@ function frame(now) {
   const petting = state.inside && state.zone !== 'none' && state.speed > 40;
   state.purr = Math.max(0, state.purr - (petting ? 0 : dt / 5000));
   if (actx && purrGain) {
-    purrGain.gain.setTargetAtTime(state.sound && state.armed ? state.purr * 0.5 : 0, actx.currentTime, 0.15);
-    purrLfo.frequency.setTargetAtTime(22 + state.purr * 6, actx.currentTime, 0.2);
+    purrGain.gain.setTargetAtTime(state.sound && state.armed ? purrLevel(state.purr) : 0, actx.currentTime, 0.3);
+    purrLfo.frequency.setTargetAtTime(24 + state.purr * 4, actx.currentTime, 0.4);
     if (!petting) noiseGain.gain.setTargetAtTime(0, actx.currentTime, 0.08);
   }
   // draw

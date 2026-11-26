@@ -55,4 +55,13 @@ export const zoneAt = (mask, x, y) => (!hit(mask, x, y) ? 'none' : x > TAIL_X ? 
 export const fadeAlpha = (dt, perFrame = 0.045) => 1 - Math.pow(1 - perFrame, Math.max(0, dt) / (1000 / 60));
 // A sound probe passes only when it got an audio file: a static host (vite preview, Cloudflare Pages) answers a
 // missing path with 200 and index.html, so `ok` alone is not enough.
+// Stroke sound levels (pure so they can be unit tested).
+// Brushing: a soft noise whose loudness follows stroke speed; quieter on the tail. Never a train of clicks:
+// a click sample per few pixels of movement is what made strokes sound like a rattle ("드르르륵").
+export const brushLevel = (speed, zone) => (zone === 'none' ? 0 : Math.min(0.045, Math.max(0, speed - 60) / 30000) * (zone === 'tail' ? 0.45 : 1));
+// Purr: silent until the cat has been petted for a while, then grows smoothly.
+export const purrLevel = (purr) => Math.min(1, Math.max(0, (purr - 0.25) / 0.75)) * 0.32;
+// Minimum gap between tail thumps, in ms.
+export const THUMP_GAP = 400;
+
 export const isAudioResponse = (r) => !!r && r.ok && /^audio\//i.test(r.headers?.get?.('content-type') || '');
