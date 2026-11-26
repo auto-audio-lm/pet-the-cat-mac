@@ -13,12 +13,13 @@ export function isInteractiveTarget(t) {
 }
 
 // Which shortcut a key is: matched on e.key, then on the physical key (e.code) so T and M also work while a
-// non-Latin input source is active (with the Korean source e.key is 'ㅅ' / 'ㅡ').
+// non-Latin input source is active (with the Korean source e.key is 'ㅅ' / 'ㅡ'). Only for non-ASCII keys, so
+// punctuation on other Latin layouts (AZERTY types ',' on the KeyM position) keeps its own meaning.
 function shortcut(e) {
   const k = (e.key || '').toLowerCase();
   if (e.key === ' ' || (!e.key && e.code === 'Space')) return 'space';
-  if (k === 't' || (k.length === 1 && !/[a-z]/.test(k) && e.code === 'KeyT')) return 't';
-  if (k === 'm' || (k.length === 1 && !/[a-z]/.test(k) && e.code === 'KeyM')) return 'm';
+  if (k === 't' || (/[^\x00-\x7f]/.test(k) && e.code === 'KeyT')) return 't';
+  if (k === 'm' || (/[^\x00-\x7f]/.test(k) && e.code === 'KeyM')) return 'm';
   return null;
 }
 

@@ -32,6 +32,8 @@ test('Korean input source: physical T / M keys still map', () => {
   assert.equal(keyUpAction({ key: 'ㅅ', code: 'KeyT' }), 'tail');
   // A Latin layout where the KeyT position types another letter keeps its own meaning.
   assert.equal(keyAction({ key: 'y', code: 'KeyT', target: body }), null);
+  assert.equal(keyAction({ key: ',', code: 'KeyM', target: body }), null); // AZERTY
+  assert.equal(keyAction({ key: '?', code: 'KeyM', shiftKey: true, target: body }), null);
 });
 test('sound probe needs an audio response, not an HTML fallback', () => {
   const res = (ok, type) => ({ ok, headers: { get: () => type } });

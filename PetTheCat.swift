@@ -84,6 +84,7 @@ if CommandLine.arguments.contains("--selftest") {
     check(!navigationAllowed(URL(string: "https://\(allowedHost).evil.example/")), "lookalike host blocked")
     check(!navigationAllowed(URL(string: "file:///etc/passwd")), "file blocked")
     check(!navigationAllowed(nil), "nil blocked")
+    check(navigationAllowed(URL(string: "about:blank")), "about:blank allowed (the error page loads there)")
     check(htmlEscape("<a href='x'>&\"") == "&lt;a href=&#39;x&#39;&gt;&amp;&quot;", "html escape")
     check(loadErrorMessage(domain: NSURLErrorDomain, code: NSURLErrorCancelled) == nil, "cancelled load ignored")
     check(loadErrorMessage(domain: "WebKitErrorDomain", code: 102) == nil, "frame load interrupted ignored")
