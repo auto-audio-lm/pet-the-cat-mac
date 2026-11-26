@@ -3,35 +3,69 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Build universal app (unsigned, ad-hoc signed)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build universal app (ad-hoc signed, not notarized)
         run: |
           set -euxo pipefail
           swift --version
           mkdir -p build
           swiftc -O -target arm64-apple-macos12.3 PetTheCat.swift -o build/PetTheCat-arm64
           swiftc -O -target x86_64-apple-macos12.3 PetTheCat.swift -o build/PetTheCat-x86_64
+          # logic self test on the runner's native architecture (no window, no network)
+          if [ "$(uname -m)" = "arm64" ]; then build/PetTheCat-arm64 --selftest; else build/PetTheCat-x86_64 --selftest; fi
           APP="build/Pet the Cat.app"
           mkdir -p "$APP/Contents/MacOS"
           lipo -create build/PetTheCat-arm64 build/PetTheCat-x86_64 -output "$APP/Contents/MacOS/PetTheCat"
           cp Info.plist "$APP/Contents/Info.plist"
+          plutil -lint "$APP/Contents/Info.plist"
           codesign --force --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
           lipo -info "$APP/Contents/MacOS/PetTheCat"
-          codesign -dv "$APP" || true
           ditto -c -k --keepParent "$APP" PetTheCat-mac.zip
-      - uses: actions/upload-artifact@v4
+          shasum -a 256 PetTheCat-mac.zip | tee PetTheCat-mac.zip.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: PetTheCat-mac
-          path: PetTheCat-mac.zip
-      - name: Publish release asset (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+          path: |
+            PetTheCat-mac.zip
+            PetTheCat-mac.zip.sha256
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          files: PetTheCat-mac.zip
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm test
+      - run: npm run test:e2e   # builds (checks assets exist) and runs the browser test on the runner's Chrome
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: PetTheCat-mac
+      - run: sha256sum -c PetTheCat-mac.zip.sha256
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          files: |
+            PetTheCat-mac.zip
+            PetTheCat-mac.zip.sha256
