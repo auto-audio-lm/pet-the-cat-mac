@@ -1,0 +1,37 @@
+name: build-mac
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal app (unsigned, ad-hoc signed)
+        run: |
+          set -euxo pipefail
+          swift --version
+          mkdir -p build
+          swiftc -O -target arm64-apple-macos12.3 PetTheCat.swift -o build/PetTheCat-arm64
+          swiftc -O -target x86_64-apple-macos12.3 PetTheCat.swift -o build/PetTheCat-x86_64
+          APP="build/Pet the Cat.app"
+          mkdir -p "$APP/Contents/MacOS"
+          lipo -create build/PetTheCat-arm64 build/PetTheCat-x86_64 -output "$APP/Contents/MacOS/PetTheCat"
+          cp Info.plist "$APP/Contents/Info.plist"
+          codesign --force --sign - "$APP"
+          lipo -info "$APP/Contents/MacOS/PetTheCat"
+          codesign -dv "$APP" || true
+          ditto -c -k --keepParent "$APP" PetTheCat-mac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PetTheCat-mac
+          path: PetTheCat-mac.zip
+      - name: Publish release asset (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PetTheCat-mac.zip
