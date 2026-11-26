@@ -83,21 +83,21 @@ const wake = () => { lastActive = performance.now(); };
 
 /* ---------- state ---------- */
 const state = {
-  coat: 0, cur: null, dark: false, sound: prefs.sound, armed: false,
+  coat: prefs.coat, cur: null, dark: false, sound: prefs.sound, armed: false,  // coat: shown as selected while it loads
   px: -999, py: -999, inside: false, lastX: 0, lastY: 0, lastT: 0, speed: 0,
   accum: 0, zone: 'none', pressure: 0, kbd: null, down: false,
 };
 const ruffle = document.createElement('canvas'); ruffle.width = W; ruffle.height = H;
 const rg = ruffle.getContext('2d');
 let wantCoat = 0;
-async function setCoat(i) {
+// `save`: the user picked this coat (always remembered); startup and the fallback below never save.
+async function setCoat(i, save = false) {
   wantCoat = i;
   try {
     const c = await getCoat(COATS[i].id);
     if (wantCoat !== i) return; // a newer choice superseded this one
-    const changed = state.coat !== i;
     state.coat = i; state.cur = c; sync(); setNotice('coat'); wake();
-    if (changed) savePrefs(['coat']);
+    if (save) savePrefs(['coat']);
   } catch {
     if (wantCoat === i) {
       const msg = `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`;
@@ -242,7 +242,8 @@ function resetInput() {
 }
 window.addEventListener('blur', resetInput);
 // Read-only view for the browser test, so it can check held-input state directly.
-window.__petState = () => ({ kbd: state.kbd, inside: state.inside, samples: samplesPlayed, draws });
+window.__petState = () => ({ kbd: state.kbd, inside: state.inside, samples: samplesPlayed, draws, hasCoat: !!state.cur,
+  brush: noiseGain ? noiseGain.gain.value : 0 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) resetInput(); });
 canvas.addEventListener('lostpointercapture', release);
 
@@ -273,7 +274,7 @@ const sw = $('swatches');
 COATS.forEach((c, i) => {
   const b = document.createElement('button'); b.className = 'sw'; b.setAttribute('aria-label', c.name); b.title = c.name;
   b.style.backgroundImage = `url(/cats/t_${c.id}.webp)`;
-  b.onclick = () => { arm(); setCoat(i); sync(); if (state.sound) playSample('tonal-on', { volume: 0.2 }); haptic('bump'); };
+  b.onclick = () => { arm(); setCoat(i, true); sync(); if (state.sound) playSample('tonal-on', { volume: 0.2 }); haptic('bump'); };
   sw.appendChild(b);
 });
 function sync() { [...sw.children].forEach((b, i) => b.setAttribute('aria-pressed', i === state.coat)); }
@@ -281,6 +282,7 @@ sync();
 function showSound() { $('sound').setAttribute('aria-checked', state.sound); $('sound').textContent = state.sound ? '🔊' : '🔇'; }
 function toggleSound() {
   state.sound = !state.sound; arm(); showSound(); savePrefs(['sound']);
+  if (!state.sound) stopNoise(); // mid-stroke too: the frame loop only silences brushing once the stroke ends
   playSample(state.sound ? 'synth-on' : 'synth-off', { volume: 0.25 });
 }
 $('sound').onclick = toggleSound;

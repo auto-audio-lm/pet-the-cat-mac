@@ -13,6 +13,9 @@ for (let i = 0; i < 40 && !up; i++) { try { up = (await fetch(`http://localhost:
 if (!up) { console.error(`vite preview did not answer on port ${PORT}`); srv.kill(); process.exit(2); }
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
 let failed = 0;
+const pageErrors = [];
+// Any uncaught exception in any page fails the run, even if no assertion happens to notice it.
+browser.on('targetcreated', async (t) => { const pg = await t.page().catch(() => null); pg?.on('pageerror', (e) => pageErrors.push(String(e))); });
 const ok = (name, cond, info = '') => { if (!cond) failed++; console.log(`${cond ? 'PASS' : 'FAIL'}: ${name}${info ? '  [' + info + ']' : ''}`); };
 
 async function open({ q = '', bridge = true, native = false, keepPrefs = false, block = () => false } = {}) {
@@ -94,16 +97,27 @@ try {
   const samples = () => p.evaluate(() => window.__petState().samples);
   await p.mouse.move(420, 380); await p.mouse.down();
   const s0 = await samples();
-  for (let i = 0; i < 4; i++) { await p.mouse.move(780, 420, { steps: 30 }); await p.mouse.move(420, 380, { steps: 30 }); }
+  let peakBrush = 0;
+  for (let i = 0; i < 4; i++) {
+    await p.mouse.move(780, 420, { steps: 30 }); await p.mouse.move(420, 380, { steps: 30 });
+    peakBrush = Math.max(peakBrush, await p.evaluate(() => window.__petState().brush));
+  }
+  ok('brushing gets louder while stroking', peakBrush > 0.001, `peak gain ${peakBrush.toFixed(4)}`);
+  const strokeSamples = (await samples()) - s0; // before the M presses below, which play their own on/off samples
+  // M mid-stroke silences the brushing at once, not when the stroke ends.
+  await p.mouse.move(780, 420, { steps: 15 }); await p.keyboard.press('m'); await sleep(400);
+  ok('M mid-stroke silences brushing', (await p.evaluate(() => window.__petState().brush)) < 0.002, `gain ${(await p.evaluate(() => window.__petState().brush)).toFixed(4)}`);
+  await p.keyboard.press('m');
   await p.mouse.up();
   const strokeHaptics = (await haptics(p)).length;
   ok('brushing noise source (looping) is playing', (await p.evaluate(() => window.__started)) === 1, `started ${await p.evaluate(() => window.__started)}`);
   ok('no synthesized hum while petting (no oscillators)', (await p.evaluate(() => window.__osc)) === 0, `oscillators ${await p.evaluate(() => window.__osc)}`);
-  ok('long stroke plays at most the touch pat, no click train', (await samples()) - s0 <= 1 && strokeHaptics > 5,
-    `samples +${(await samples()) - s0}, haptics ${strokeHaptics}`);
+  ok('long stroke plays at most the touch pat, no click train', strokeSamples <= 1 && strokeHaptics > 5,
+    `samples +${strokeSamples}, haptics ${strokeHaptics}`);
   await p.mouse.click(10, 10);
   const t0 = await samples(); await p.keyboard.down('t'); await sleep(2000); await p.keyboard.up('t');
-  ok('tail strokes thump at most every 400 ms', (await samples()) - t0 <= 6, `+${(await samples()) - t0} in 2 s`);
+  const thumps = (await samples()) - t0;
+  ok('tail strokes thump, at most every 400 ms', thumps >= 1 && thumps <= 6, `+${thumps} in 2 s`);
   await p.close();
 
   p = await open();
@@ -154,11 +168,13 @@ try {
   // Idle: no input for a while -> no redraws; any movement -> drawing resumes.
   p = await open();
   const drawsNow = () => p.evaluate(() => window.__petState().draws);
-  await sleep(3600); const d1 = await drawsNow(); await sleep(1000); const d2 = await drawsNow();
+  // Wait until drawing has been still for 500 ms (up to 10 s), instead of betting on fixed sleeps.
+  const settle = async () => { let a = await drawsNow(); for (let i = 0; i < 40; i++) { await sleep(250); const b = await drawsNow(); if (b === a && i > 1) return b; a = b; } return a; };
+  const d1 = await settle(); await sleep(1000); const d2 = await drawsNow();
   ok('idle page stops redrawing', d2 === d1, `${d1} -> ${d2} in 1 s`);
   await p.mouse.move(600, 400); await p.mouse.move(640, 410, { steps: 5 }); await sleep(300);
   ok('pointer movement resumes drawing', (await drawsNow()) > d2, `${d2} -> ${await drawsNow()}`);
-  await sleep(3400); const d3 = await drawsNow(); await sleep(300);
+  const d3 = await settle(); await sleep(300);
   ok('idle again after movement stops', (await drawsNow()) === d3);
   await p.$eval('#moon', (b) => b.click()); await sleep(300);  // no pointer movement, so only setDark can wake drawing
   ok('theme change redraws', (await drawsNow()) > d3, `${d3} -> ${await drawsNow()}`);
@@ -207,6 +223,20 @@ try {
   await pa.evaluate(() => localStorage.removeItem('petTheCat.prefs'));
   await pa.close(); await pb.close();
 
+  // Picking coat 0 is remembered even while the saved coat 3 is still loading.
+  p = await browser.newPage(); await p.setViewport({ width: 1200, height: 800 });
+  await p.evaluateOnNewDocument(() => { try { if (!sessionStorage.getItem('seeded')) { localStorage.setItem('petTheCat.prefs', JSON.stringify({ coat: 3 })); sessionStorage.setItem('seeded', '1'); } } catch {} });
+  await p.setRequestInterception(true);
+  p.on('request', (r) => (r.url().includes('/cats/white.webp') ? setTimeout(() => r.continue(), 1500) : r.continue()));
+  await p.goto(`http://localhost:${PORT}/`, { waitUntil: 'domcontentloaded' });
+  ok('saved coat shows as selected while it loads', (await pressedCoats(p))[3] === 'true', JSON.stringify(await pressedCoats(p)));
+  await p.click('#swatches button:nth-child(1)');
+  await waitStatus(p, () => window.__petState().hasCoat); await sleep(1800);
+  ok('picking coat 0 during the saved coat load is remembered', (await p.evaluate(() => JSON.parse(localStorage.getItem('petTheCat.prefs')).coat)) === 0
+    && (await pressedCoats(p))[0] === 'true', JSON.stringify(await p.evaluate(() => localStorage.getItem('petTheCat.prefs'))));
+  await p.evaluate(() => localStorage.removeItem('petTheCat.prefs'));
+  await p.close();
+
   // A saved coat whose image fails at startup falls back to the first coat instead of a blank cat.
   p = await browser.newPage(); await p.setViewport({ width: 1200, height: 800 });
   await p.evaluateOnNewDocument(() => { try { localStorage.setItem('petTheCat.prefs', JSON.stringify({ coat: 2 })); } catch {} });
@@ -214,7 +244,11 @@ try {
   p.on('request', (r) => (r.url().includes('/cats/calico.webp') ? r.respond({ status: 404, body: 'x' }) : r.continue()));
   await p.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle0' });
   await waitStatus(p, () => document.querySelector('#swatches button:nth-child(1)').getAttribute('aria-pressed') === 'true');
-  ok('saved coat failing at startup falls back to the first coat', (await pressedCoats(p))[0] === 'true' && (await status(p)).includes('삼색이'), await status(p));
+  await waitStatus(p, () => window.__petState().hasCoat);
+  await sleep(300);
+  ok('a fallback after a failed load does not overwrite the saved coat', (await p.evaluate(() => JSON.parse(localStorage.getItem('petTheCat.prefs')).coat)) === 2,
+    await p.evaluate(() => localStorage.getItem('petTheCat.prefs')));
+  ok('saved coat failing at startup falls back to the first coat', (await p.evaluate(() => window.__petState().hasCoat)) && (await pressedCoats(p))[0] === 'true' && (await status(p)).includes('삼색이'), await status(p));
   await p.evaluate(() => localStorage.removeItem('petTheCat.prefs'));
   await p.close();
 
@@ -222,6 +256,7 @@ try {
   p = await open({ block: (u) => u.includes('/sounds/low-thumps.mp3') && { status: 200, contentType: 'text/html', body: '<!doctype html><html></html>' } });
   ok('sound replaced by an HTML fallback shows notice', (await status(p)).includes('소리 파일'), await status(p));
   await p.close();
+  ok('no uncaught page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (e) { failed++; console.log('ERROR', e.stack); }
 await browser.close(); srv.kill();
 console.log(failed ? `\n${failed} FAILED` : '\nall passed');
