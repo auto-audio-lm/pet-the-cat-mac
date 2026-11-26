@@ -22,7 +22,8 @@ cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP/Contents/Info.plist"
 
 "$APP/Contents/MacOS/PetTheCat" --selftest
-# Also run the Intel slice when this Mac can (Apple silicon with Rosetta, or an Intel Mac).
+# Also run the Intel slice when this Mac can (Apple silicon with Rosetta). On an Intel Mac this repeats the
+# x86_64 run, and the arm64 slice cannot be run there at all.
 if arch -x86_64 /usr/bin/true 2>/dev/null; then
   if ! out="$(arch -x86_64 "$APP/Contents/MacOS/PetTheCat" --selftest)"; then
     echo "$out" | grep FAIL || true

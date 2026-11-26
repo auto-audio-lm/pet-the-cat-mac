@@ -1,5 +1,6 @@
 // Pet the Cat - small macOS wrapper that lets the web app request trackpad haptics.
-// STATUS: compiles on a GitHub macOS runner (CI). Never launched on a real Mac by the author; trackpad haptics are UNVERIFIED.
+// STATUS: builds and passes --selftest / --smoke-test locally and in CI. The older click haptics were felt on a real Mac;
+//         the fur texture (private actuator pulses) has not been felt yet.
 // Requires: macOS 12.3+ (WKPreferences.isElementFullscreenEnabled), internet access. Release builds are notarized only when CI has
 //           the signing secrets (see README); otherwise ad-hoc signed.
 // Build:   ./build.sh  (universal app bundle in build/), or
@@ -112,7 +113,7 @@ enum HapticStyle: String, CaseIterable {
     var clumpID: Int32 { switch self { case .soft: return 1; case .firm: return 2; default: return 5 } }
     var tailID: Int32 { switch self { case .soft: return 1; case .firm: return 2; default: return 5 } }
     var bumpID: Int32 { self == .soft ? 5 : 6 }
-    /// Points of pointer travel per pulse. The public-API fallback is coarser: its pulses cannot be made weaker.
+    /// Points of pointer travel per pulse with the actuator's weak pulses. Without them see `effectiveSpacing`.
     var spacing: Double { switch self { case .soft: return 11; case .firm: return 7; case .system: return 18; default: return 8 } }
 }
 
@@ -263,9 +264,15 @@ final class FurTexture {
         grains = GrainGenerator(spacing: saved.spacing)
     }
 
+    /// Public-API clicks cannot be made weaker, so without the actuator every style uses the coarse classic spacing.
+    static func effectiveSpacing(_ style: HapticStyle, actuatorUsable: Bool) -> Double {
+        actuatorUsable || style == .system ? style.spacing : HapticStyle.system.spacing
+    }
+
     /// Native pointer movement (mouseMoved / dragged): the texture itself.
     func handle(_ e: NSEvent) {
         guard zone != .none, style != .off, canPlay(e) else { return }
+        grains.spacing = FurTexture.effectiveSpacing(style, actuatorUsable: actuator.usable)
         let d = Double(hypot(e.deltaX, e.deltaY))
         guard grains.move(distance: d, at: e.timestamp, random: Double.random(in: -1...1)) else { return }
         count += 1
@@ -284,8 +291,9 @@ final class FurTexture {
 
     /// Pulse times (s from start) and IDs for a steady stroke over the body: what the texture plays for a hand
     /// moving at `speed` pt/s, so it can be felt without moving. Pure, for --selftest.
-    static func previewSchedule(style: HapticStyle, speed: Double, duration: Double, seed: UInt64 = 1) -> [(t: Double, id: Int32)] {
-        var gen = GrainGenerator(spacing: style.spacing)
+    static func previewSchedule(style: HapticStyle, speed: Double, duration: Double, spacing: Double? = nil,
+                                seed: UInt64 = 1) -> [(t: Double, id: Int32)] {
+        var gen = GrainGenerator(spacing: spacing ?? style.spacing)
         var rng = seed
         var out: [(Double, Int32)] = []
         let step = 0.008
@@ -314,7 +322,8 @@ final class FurTexture {
         cancelDemo()
         guard style != .off else { return }
         let generation = demoGeneration
-        for p in FurTexture.previewSchedule(style: style, speed: 300, duration: 1.2) {
+        let spacing = FurTexture.effectiveSpacing(style, actuatorUsable: actuator.usable)
+        for p in FurTexture.previewSchedule(style: style, speed: 300, duration: 1.2, spacing: spacing) {
             DispatchQueue.main.asyncAfter(deadline: .now() + p.t) { [self] in
                 guard demoStillWanted(generation) else { return }
                 play(p.id, fallback: .generic, now: ProcessInfo.processInfo.systemUptime)
@@ -399,7 +408,10 @@ if CommandLine.arguments.contains("--selftest") {
         check(grainStrength(base: 3, speed: 0) == 1, "unknown base starts from the weakest")
         var first = GrainGenerator(spacing: 8)
         check(first.move(distance: 10, at: 1, random: 0), "a fast first move after a reset is not swallowed")
-        check(TrackpadActuator().available || true, "actuator lookup does not crash")
+        for s in [HapticStyle.soft, .normal, .firm] {
+            check(FurTexture.effectiveSpacing(s, actuatorUsable: false) >= 18, "\(s.rawValue): public-API fallback is coarse (>= 18 pt)")
+            check(FurTexture.effectiveSpacing(s, actuatorUsable: true) == s.spacing, "\(s.rawValue): actuator uses the style spacing")
+        }
         for s in HapticStyle.allCases { check(s.spacing > 0 && s.grainID > 0, "style \(s.rawValue) has parameters") }
     }
     var g = HapticGate()
@@ -410,7 +422,8 @@ if CommandLine.arguments.contains("--selftest") {
     exit(failures == 0 ? 0 : 1)
 }
 
-final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler,
+                           NSMenuItemValidation {
     var window: NSWindow!
     var web: WKWebView!
     var crashes = CrashLimiter()
@@ -433,6 +446,7 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
                           backing: .buffered, defer: false)
         window.title = "Pet the Cat"
+        window.isReleasedWhenClosed = false   // the controller keeps using it (e.g. canPlay) until the app quits
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.contentView = web
         window.center()
@@ -442,7 +456,7 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
         window.acceptsMouseMovedEvents = true
 
         texture.canPlay = { [weak self] e in
-            guard let self, NSApp.isActive, self.window.isKeyWindow else { return false }
+            guard !smokeTest, let self, NSApp.isActive, self.window.isKeyWindow else { return false }  // smoke test: never
             return e == nil || e?.window === self.window
         }
         NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] e in
@@ -493,8 +507,6 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         showError(webView, error)
     }
-    // The page's web process crashed. `reload()` does nothing if nothing had committed yet, so load the start URL;
-    // after repeated crashes show the error page instead of looping.
     // A new page (or the error page) starts with the pointer over nothing until it reports otherwise.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) { texture.zone = .none }
 
@@ -525,6 +537,8 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
         exit(ok ? 0 : 1)
     }
 
+    // The page's web process crashed. `reload()` does nothing if nothing had committed yet, so load the start URL;
+    // after repeated crashes show the error page instead of looping.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         texture.zone = .none
         if crashes.allowRestart(now: ProcessInfo.processInfo.systemUptime) {
@@ -564,6 +578,11 @@ final class AppController: NSObject, NSApplicationDelegate, WKNavigationDelegate
         updateStyleMenu()
     }
     @objc func previewTexture() { texture.preview() }
+    // Preview and Compare do nothing while haptics are off, so show them disabled then.
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(previewTexture) || item.action == #selector(compareStrengths) { return texture.style != .off }
+        return true
+    }
     @objc func compareStrengths() { texture.compareStrengths() }
     func updateStyleMenu() { for item in styleItems { item.state = (item.representedObject as? String) == texture.style.rawValue ? .on : .off } }
 }
