@@ -270,8 +270,9 @@ final class FurTexture {
         guard grains.move(distance: d, at: e.timestamp, random: Double.random(in: -1...1)) else { return }
         count += 1
         let base: Int32 = zone == .tail ? style.tailID : (count % 5 == 0 ? style.clumpID : style.grainID)
-        // Pressing while stroking (a drag) makes the fur feel denser; a force click counts as fully pressed.
-        let pressure = e.type == .leftMouseDragged ? (e.stage >= 2 ? 1 : Double(e.pressure)) : 0
+        // Pressing while stroking (a drag) makes the fur feel denser. NSEvent.h: `pressure` is valid for mouse
+        // down/up/drag events; `stage` is valid only for NSEventTypePressure events, so it is not read here.
+        let pressure = e.type == .leftMouseDragged ? Double(e.pressure) : 0
         play(grainStrength(base: base, speed: grains.speed, pressure: pressure), fallback: .generic, now: e.timestamp)
     }
 
