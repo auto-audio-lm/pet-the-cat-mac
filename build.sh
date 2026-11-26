@@ -12,12 +12,13 @@ IDENTITY="${CODESIGN_IDENTITY:--}"
 APP="build/Pet the Cat.app"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 for arch in arm64 x86_64; do
   swiftc -O -target "$arch-apple-macos12.3" PetTheCat.swift -o "build/PetTheCat-$arch"
 done
 lipo -create build/PetTheCat-arm64 build/PetTheCat-x86_64 -output "$APP/Contents/MacOS/PetTheCat"
 cp Info.plist "$APP/Contents/Info.plist"
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 plutil -lint "$APP/Contents/Info.plist"
 
 "$APP/Contents/MacOS/PetTheCat" --selftest
