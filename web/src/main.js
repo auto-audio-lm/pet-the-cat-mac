@@ -1,6 +1,6 @@
 import { press, setPath, load } from 'button-sounds';
 import { W, H, hit as hitMask, zoneAt as zoneAtMask, keyAction, keyUpAction, makeHapticGate, fadeAlpha, isAudioResponse,
-  brushLevel, THUMP_GAP } from './logic.js';
+  brushLevel, THUMP_GAP, PREFS_KEY, parsePrefs } from './logic.js';
 
 setPath('/sounds/');
 const SOUNDS = ['uhk-soft', 'low-thumps', 'synth-on', 'synth-off', 'tonal-on', 'hi75-soft'];
@@ -18,6 +18,17 @@ const COATS = [
   { id: 'white', name: '흰 고양이' }, { id: 'mackerel', name: '고등어' }, { id: 'tuxedo', name: '턱시도' },
   { id: 'brown', name: '카오스' }, { id: 'grey', name: '회색' }, { id: 'siamese', name: '샴' }, { id: 'cream', name: '크림 장모' },
 ];
+
+/* ---------- saved preferences (coat, sound, theme) ---------- */
+// Storage can be unavailable (private mode, blocked); the page then simply starts with the defaults.
+let storedPrefs = null;
+try { storedPrefs = localStorage.getItem(PREFS_KEY); } catch { /* ignore */ }
+const prefs = parsePrefs(storedPrefs, COATS.length);
+// The theme the user chose. Kept apart from state.dark, which ?theme=dark can force for one visit without saving.
+let chosenDark = prefs.dark;
+function savePrefs() {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify({ coat: state.coat, sound: state.sound, dark: chosenDark })); } catch { /* ignore */ }
+}
 
 /* ---------- assets ---------- */
 const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('load failed: ' + src)); i.src = src; });
@@ -61,7 +72,7 @@ const wake = () => { lastActive = performance.now(); };
 
 /* ---------- state ---------- */
 const state = {
-  coat: 0, cur: null, dark: false, sound: true, armed: false,
+  coat: 0, cur: null, dark: false, sound: prefs.sound, armed: false,
   px: -999, py: -999, inside: false, lastX: 0, lastY: 0, lastT: 0, speed: 0,
   accum: 0, zone: 'none', pressure: 0, kbd: null, down: false,
 };
@@ -73,12 +84,14 @@ async function setCoat(i) {
   try {
     const c = await getCoat(COATS[i].id);
     if (wantCoat !== i) return; // a newer choice superseded this one
+    const changed = state.coat !== i;
     state.coat = i; state.cur = c; sync(); setNotice('coat'); wake();
+    if (changed) savePrefs();
   } catch {
     if (wantCoat === i) { wantCoat = state.coat; setNotice('coat', `${COATS[i].name} 이미지를 못 불러왔어요. 다시 눌러 보세요.`); }
   }
 }
-setCoat(0);
+setCoat(prefs.coat);
 
 /* ---------- audio ---------- */
 let actx = null, noiseGain, noiseFilter;
@@ -246,14 +259,14 @@ COATS.forEach((c, i) => {
 });
 function sync() { [...sw.children].forEach((b, i) => b.setAttribute('aria-pressed', i === state.coat)); }
 sync();
+function showSound() { $('sound').setAttribute('aria-checked', state.sound); $('sound').textContent = state.sound ? '🔊' : '🔇'; }
 function toggleSound() {
-  state.sound = !state.sound; arm();
-  $('sound').setAttribute('aria-checked', state.sound); $('sound').textContent = state.sound ? '🔊' : '🔇';
+  state.sound = !state.sound; arm(); showSound(); savePrefs();
   playSample(state.sound ? 'synth-on' : 'synth-off', { volume: 0.25 });
 }
 $('sound').onclick = toggleSound;
-function setDark(v) {
-  wake(); state.dark = v; $('moon').setAttribute('aria-checked', v); $('moon').textContent = v ? '☀' : '☾';
+function setDark(v, persist = true) {
+  wake(); state.dark = v; if (persist) { chosenDark = v; savePrefs(); } $('moon').setAttribute('aria-checked', v); $('moon').textContent = v ? '☀' : '☾';
   document.documentElement.dataset.theme = v ? 'dark' : 'light';
   document.querySelector('meta[name=theme-color]').content = v ? '#101722' : '#fbf5ec';
 }
@@ -270,7 +283,10 @@ function updateStatus() {
   $('status').textContent = bits.join(' · ');
 }
 updateStatus();
-if (new URLSearchParams(location.search).get('theme') === 'dark') setDark(true); // no sound, no gesture needed
+showSound();
+// ?theme=dark forces the dark theme for this visit without saving it; otherwise the saved theme applies.
+if (new URLSearchParams(location.search).get('theme') === 'dark') setDark(true, false); // no sound, no gesture needed
+else if (prefs.dark) setDark(true, false);
 
 /* ---------- loop ---------- */
 let last = performance.now();

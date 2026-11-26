@@ -15,8 +15,10 @@ const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new'
 let failed = 0;
 const ok = (name, cond, info = '') => { if (!cond) failed++; console.log(`${cond ? 'PASS' : 'FAIL'}: ${name}${info ? '  [' + info + ']' : ''}`); };
 
-async function open({ q = '', bridge = true, native = false, block = () => false } = {}) {
+async function open({ q = '', bridge = true, native = false, keepPrefs = false, block = () => false } = {}) {
   const p = await browser.newPage(); await p.setViewport({ width: 1200, height: 800 });
+  // Pages share one browser profile; start each from default preferences unless a test checks persistence.
+  if (!keepPrefs) await p.evaluateOnNewDocument(() => { try { localStorage.removeItem('petTheCat.prefs'); } catch {} });
   await p.evaluateOnNewDocument((withBridge, withNative) => {
     window.__h = []; window.__zones = []; window.__osc = 0; window.__started = 0;
     if (window.AudioBufferSourceNode) { const st = AudioBufferSourceNode.prototype.start; AudioBufferSourceNode.prototype.start = function (...a) { if (this.loop) window.__started++; return st.apply(this, a); }; }
@@ -172,6 +174,23 @@ try {
   while (guard++ < 20 && !(await p.evaluate(() => document.activeElement?.getAttribute('aria-pressed') === 'true'))) await p.keyboard.press('Tab');
   const ring = await p.evaluate(() => getComputedStyle(document.activeElement).boxShadow);
   ok('a11y: keyboard focus on the selected swatch shows a ring', ring && ring !== 'none', ring);
+  await p.close();
+
+  // Preferences: coat, sound and theme survive a new visit; ?theme=dark is not saved.
+  p = await open();
+  await p.click('#swatches button:nth-child(4)');
+  await waitStatus(p, () => document.querySelector('#swatches button:nth-child(4)').getAttribute('aria-pressed') === 'true');
+  await p.click('#sound'); await p.click('#moon');
+  await p.close();
+  p = await open({ keepPrefs: true });
+  await waitStatus(p, () => document.querySelector('#swatches button:nth-child(4)').getAttribute('aria-pressed') === 'true');
+  const kept = await p.evaluate(() => ({ coat: [...document.querySelectorAll('#swatches button')].findIndex((b) => b.getAttribute('aria-pressed') === 'true'),
+    sound: document.getElementById('sound').getAttribute('aria-checked'), theme: document.documentElement.dataset.theme }));
+  ok('prefs: coat, sound and theme are remembered', kept.coat === 3 && kept.sound === 'false' && kept.theme === 'dark', JSON.stringify(kept));
+  await p.click('#moon'); await p.close();                       // back to light, saved
+  p = await open({ keepPrefs: true, q: '?theme=dark' }); await p.close();
+  p = await open({ keepPrefs: true });
+  ok('prefs: ?theme=dark is not saved', (await p.evaluate(() => document.documentElement.dataset.theme)) !== 'dark');
   await p.close();
 
   // Static hosts answer a missing file with 200 + index.html; that must count as missing too.

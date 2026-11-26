@@ -23,6 +23,13 @@
   - Stroking no longer rattles. Strokes make a soft brushing sound that follows speed. A click sample plays only on first touch, and the tail thump plays at most every 400 ms.
   - The synthesized purr hum is gone.
 - **Haptics**: with the new app, the page reports which part of the cat is under the pointer, and the app makes the texture. Older app versions keep receiving a pulse per stroke step.
+- **Preferences**: the chosen cat, sound on/off and theme are remembered. A theme forced with `?theme=dark` is not saved.
+- **Battery**: the canvas is no longer redrawn while nothing changes.
+- **Accessibility**
+  - The canvas has a name, and load notices are announced.
+  - Keyboard focus shows on the selected cat.
+  - Small text meets 4.5:1 contrast in the light theme.
+  - The help text lists M (sound).
 - **Keyboard shortcuts**
   - T and M work after clicking a button, and with the Korean input source.
   - Punctuation on other keyboard layouts no longer toggles sound.

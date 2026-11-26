@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { keyAction, keyUpAction, makeHapticGate, hit, zoneAt, fadeAlpha, isAudioResponse, brushLevel, W } from '../src/logic.js';
+import { keyAction, keyUpAction, makeHapticGate, hit, zoneAt, fadeAlpha, isAudioResponse, brushLevel, parsePrefs, W } from '../src/logic.js';
 
 const btn = { tagName: 'BUTTON' }, body = { tagName: 'BODY' };
 test('plain keys', () => {
@@ -48,6 +48,16 @@ test('stroke sound: brushing follows speed, silent off the cat and when still', 
   assert.ok(brushLevel(300, 'body') < brushLevel(900, 'body'));
   assert.ok(brushLevel(900, 'tail') < brushLevel(900, 'body'));
   assert.ok(brushLevel(5000, 'body') <= 0.045);
+});
+test('saved preferences: valid values kept, anything else falls back', () => {
+  const d = { coat: 0, sound: true, dark: false };
+  assert.deepEqual(parsePrefs(null, 10), d);
+  assert.deepEqual(parsePrefs('not json', 10), d);
+  assert.deepEqual(parsePrefs('[1,2]', 10), { coat: 0, sound: true, dark: false });
+  assert.deepEqual(parsePrefs('{"coat":3,"sound":false,"dark":true}', 10), { coat: 3, sound: false, dark: true });
+  assert.deepEqual(parsePrefs('{"coat":12,"sound":"no","dark":1}', 10), d);
+  assert.deepEqual(parsePrefs('{"coat":-1}', 10), d);
+  assert.deepEqual(parsePrefs('{"coat":2.5}', 10), d);
 });
 test('keyup mapping', () => { assert.equal(keyUpAction({ key: ' ' }), 'body'); assert.equal(keyUpAction({ key: 'T' }), 'tail'); assert.equal(keyUpAction({ key: 'x' }), null); });
 test('haptic gate: tick 50ms, bump 25ms, bump not starved', () => {

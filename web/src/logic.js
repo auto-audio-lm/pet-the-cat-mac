@@ -63,3 +63,17 @@ export const THUMP_GAP = 400;
 // A sound probe passes only when it got an audio file: a static host (vite preview, Cloudflare Pages) answers a
 // missing path with 200 and index.html, so `ok` alone is not enough.
 export const isAudioResponse = (r) => !!r && r.ok && /^audio\//i.test(r.headers?.get?.('content-type') || '');
+
+// Saved preferences (localStorage JSON). Anything missing, malformed or out of range falls back to the default.
+export const PREFS_KEY = 'petTheCat.prefs';
+export function parsePrefs(json, coatCount) {
+  const d = { coat: 0, sound: true, dark: false };
+  let p;
+  try { p = JSON.parse(json); } catch { return d; }
+  if (!p || typeof p !== 'object') return d;
+  return {
+    coat: Number.isInteger(p.coat) && p.coat >= 0 && p.coat < coatCount ? p.coat : d.coat,
+    sound: typeof p.sound === 'boolean' ? p.sound : d.sound,
+    dark: typeof p.dark === 'boolean' ? p.dark : d.dark,
+  };
+}
